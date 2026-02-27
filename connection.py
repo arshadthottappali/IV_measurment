@@ -124,6 +124,66 @@ class KeithleyConnection:
             logger.exception("Current measurement failed")
             raise
 
+    def run_tsp_sweep(self, voltages, delay_s: float):
+        self._require_connection()
+        if self.mode != "tsp2600":
+            raise RuntimeError("Fast instrument sweep is available only for Keithley 2600 TSP mode")
+        if not voltages:
+            return []
+        if not isinstance(delay_s, (int, float)) or not math.isfinite(delay_s) or delay_s < 0:
+            raise RuntimeError("Delay must be a non-negative finite number")
+
+        for v in voltages:
+            self._validate_voltage(v)
+
+        original_timeout = getattr(self.inst, "timeout", 5000)
+        estimated_ms = int(max(20_000, min(300_000, (len(voltages) * max(delay_s, 1e-6) * 1000 * 8))))
+        self.inst.timeout = max(original_timeout, estimated_ms)
+        logger.info(
+            "Fast TSP sweep timeout set to %d ms (original %d ms, points=%d, delay=%s s)",
+            self.inst.timeout,
+            original_timeout,
+            len(voltages),
+            delay_s,
+        )
+        try:
+            self.enable_output()
+            points = ",".join(f"{float(v):.12g}" for v in voltages)
+            # Execute full loop on instrument to avoid host-side timing jitter.
+            cmd = (
+                f"local pts={{ {points} }}; "
+                f"local out=''; "
+                f"for idx,v in ipairs(pts) do "
+                f"{self.channel}.source.levelv=v; "
+                f"delay({delay_s:.9g}); "
+                f"local i={self.channel}.measure.i(); "
+                f"out=out..string.format('%.12g,%.12e;', v, i); "
+                f"end; "
+                f"print(out)"
+            )
+            raw = self._query(cmd).strip()
+            pairs = [p for p in raw.split(";") if p]
+            result = []
+            for pair in pairs:
+                try:
+                    sv, si = pair.split(",", 1)
+                    result.append((float(sv), float(si)))
+                except Exception:
+                    continue
+            if not result:
+                raise RuntimeError("Instrument fast sweep returned no parseable data")
+            self._check_instrument_errors()
+            return result
+        except Exception:
+            logger.exception("Fast TSP sweep failed")
+            raise
+        finally:
+            try:
+                self.inst.timeout = original_timeout
+                logger.info("Fast TSP sweep timeout restored to %d ms", original_timeout)
+            except Exception:
+                logger.exception("Failed restoring VISA timeout after fast sweep")
+
     def enable_output(self):
         self._require_connection()
         try:
