@@ -451,8 +451,8 @@ class KeithleyUI:
         if step == 0:
             messagebox.showerror("Error", "Sweep step cannot be zero")
             return
-        if delay < 0.05:
-            messagebox.showerror("Error", "Delay must be at least 0.05 seconds")
+        if delay < 0.001:
+            messagebox.showerror("Error", "Delay must be at least 0.001 seconds (1 ms)")
             return
 
         if sweep_mode == "Simple Cycle (0->+V->0->-V->0)":
