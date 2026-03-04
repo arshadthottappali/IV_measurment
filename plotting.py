@@ -4,6 +4,18 @@ from matplotlib.ticker import FormatStrFormatter
 
 class IVPlotter:
     @staticmethod
+    def prepare_log_y_data(x_data, y_data):
+        """Prepares data for log scale plotting on y-axis by taking abs(y) and removing zeros."""
+        new_x, new_y = [], []
+        for x, y in zip(x_data, y_data):
+            ay = abs(y)
+            if ay == 0:
+                continue
+            new_x.append(x)
+            new_y.append(ay)
+        return new_x, new_y
+
+    @staticmethod
     def show(voltages=None, currents=None, xscale="linear", yscale="linear", title="Keithley I-V Sweep", cycle_series=None):
         has_data = bool(cycle_series) or bool(voltages)
         if not has_data:
@@ -39,7 +51,7 @@ class IVPlotter:
         plt.show(block=False)
 
     @staticmethod
-    def show_time_series(times, voltages, currents, title="WRER Measurement", current_yscale="linear"):
+    def show_time_series(times, voltages, currents, title="WRER Measurement", current_yscale="linear", xlim=None):
         if not times:
             return
         plt.figure("Time Series")
@@ -48,14 +60,7 @@ class IVPlotter:
         ax_i = plt.subplot(212, sharex=ax_v)
         ax_v.plot(times, voltages, marker="o", linestyle="-")
         if current_yscale == "log":
-            t_i = []
-            i_i = []
-            for t, i in zip(times, currents):
-                ai = abs(i)
-                if ai == 0:
-                    continue
-                t_i.append(t)
-                i_i.append(ai)
+            t_i, i_i = IVPlotter.prepare_log_y_data(times, currents)
             ax_i.set_yscale("log")
             ax_i.plot(t_i, i_i, marker="o", linestyle="-")
         else:
@@ -67,5 +72,7 @@ class IVPlotter:
         ax_v.set_title(title)
         ax_v.grid(True)
         ax_i.grid(True)
+        if xlim is not None and len(xlim) == 2:
+            ax_v.set_xlim(xlim[0], xlim[1])
         plt.tight_layout()
         plt.show(block=False)

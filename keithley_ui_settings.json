@@ -26,10 +26,12 @@
   "sweep_exec": "Host (UI timing)",
   "fast_limit": "1 ms",
   "x_axis_scale": "Linear",
-  "y_axis_scale": "Log",
+  "y_axis_scale": "Linear",
+  "active_plot_mode": "wrer",
+  "last_run_mode": "iv",
   "custom_segments": [],
   "sweep_tab_index": 2,
   "main_tab_index": 2,
   "preferred_save_dir": "C:/Users/thottappali/Documents/test kethly",
-  "window_geometry": "1536x889+-8+-8"
+  "window_geometry": "1920x1009+-8+-8"
 }

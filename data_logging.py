@@ -2,7 +2,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import csv
+import logging
 
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Measurement:
@@ -83,7 +86,7 @@ class DataLogger:
                 )
 
             loaded = []
-            for row in reader:
+            for i, row in enumerate(reader, start=2):
                 try:
                     loaded.append(
                         Measurement(
@@ -95,7 +98,8 @@ class DataLogger:
                             notes=(row.get("notes") or "").strip(),
                         )
                     )
-                except Exception:
+                except (ValueError, TypeError) as e:
+                    logger.warning("Skipping malformed row %d in %s: %s", i, path.name, e)
                     continue
 
         if not loaded:
@@ -111,4 +115,3 @@ class DataLogger:
             if file_missing_or_empty:
                 writer.writerow(["timestamp", "voltage", "current", "sample_name", "operator", "notes"])
             writer.writerow([row.timestamp, row.voltage, row.current, row.sample_name, row.operator, row.notes])
-

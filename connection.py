@@ -137,8 +137,14 @@ class KeithleyConnection:
             self._validate_voltage(v)
 
         original_timeout = getattr(self.inst, "timeout", 5000)
-        estimated_ms = int(max(20_000, min(300_000, (len(voltages) * max(delay_s, 1e-6) * 1000 * 8))))
-        self.inst.timeout = max(original_timeout, estimated_ms)
+        # Estimate sweep time and add a large safety margin for instrument processing.
+        # The total time is more than just sum of delays.
+        # We use a safety factor and also clamp to a reasonable range (20s to 5min).
+        estimated_sweep_s = len(voltages) * max(delay_s, 1e-6)
+        safety_factor = 8
+        estimated_ms = int(estimated_sweep_s * 1000 * safety_factor)
+        clamped_timeout_ms = max(20_000, min(300_000, estimated_ms))
+        self.inst.timeout = max(original_timeout, clamped_timeout_ms)
         logger.info(
             "Fast TSP sweep timeout set to %d ms (original %d ms, points=%d, delay=%s s)",
             self.inst.timeout,

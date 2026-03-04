@@ -19,6 +19,7 @@ from plotting import IVPlotter
 class KeithleyUI:
     SAFE_VOLTAGE_LIMIT = 5.0
     SETTINGS_FILE = "keithley_ui_settings.json"
+    WRER_WARN_POINTS = 20000
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -46,6 +47,7 @@ class KeithleyUI:
         self._sweep_cycle_ids = []
         self._sweep_point_times = []
         self.active_plot_mode = "iv"
+        self._last_run_mode = "iv"
 
         self.status_text = tk.StringVar(value="Disconnected")
         self.connection_text = tk.StringVar(value="Disconnected")
@@ -377,8 +379,10 @@ class KeithleyUI:
             text="Uses Common Delay as read interval. Step is not used.",
             wraplength=320,
         ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.preview_wrer_btn = ttk.Button(wrer_tab, text="Preview Sequence", command=self.preview_wrer)
+        self.preview_wrer_btn.grid(row=8, column=0, sticky="ew", pady=(6, 0), padx=(0, 4))
         self.run_wrer_btn = ttk.Button(wrer_tab, text="Run WRER", command=self.run_wrer_from_inputs)
-        self.run_wrer_btn.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.run_wrer_btn.grid(row=8, column=1, sticky="ew", pady=(6, 0))
 
         progress_row = ttk.Frame(frame)
         progress_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -487,6 +491,12 @@ class KeithleyUI:
         self._set_combo_if_valid(self.fast_limit_combo, data.get("fast_limit"))
         self._set_combo_if_valid(self.x_axis_scale_combo, data.get("x_axis_scale"))
         self._set_combo_if_valid(self.y_axis_scale_combo, data.get("y_axis_scale"))
+        active_plot_mode = data.get("active_plot_mode")
+        if active_plot_mode in ("iv", "wrer"):
+            self.active_plot_mode = active_plot_mode
+        last_run_mode = data.get("last_run_mode")
+        if last_run_mode in ("iv", "wrer"):
+            self._last_run_mode = last_run_mode
         self._on_sweep_exec_change()
 
         preferred_save_dir = data.get("preferred_save_dir")
@@ -558,6 +568,8 @@ class KeithleyUI:
             "fast_limit": self.fast_limit_combo.get(),
             "x_axis_scale": self.x_axis_scale_combo.get(),
             "y_axis_scale": self.y_axis_scale_combo.get(),
+            "active_plot_mode": self.active_plot_mode,
+            "last_run_mode": self._last_run_mode,
             "custom_segments": self.custom_segments,
             "sweep_tab_index": self.sweep_subtabs.index(self.sweep_subtabs.select()),
             "main_tab_index": self.controls_tabs.index(self.controls_tabs.select()),
@@ -578,6 +590,7 @@ class KeithleyUI:
         connected_state = "normal" if self.connected else "disabled"
         idle_connected_state = "normal" if self.connected and not (self.live_running or self.sweep_running) else "disabled"
         live_state = "normal" if self.connected and not self.live_running and not self.sweep_running else "disabled"
+        preview_state = "disabled" if (self.live_running or self.sweep_running) else "normal"
         stop_state = "normal" if self.live_running or self.sweep_running else "disabled"
 
         self.apply_voltage_btn.config(state=idle_connected_state)
@@ -587,6 +600,7 @@ class KeithleyUI:
         self.run_sweep_btn.config(state=live_state)
         self.run_custom_sweep_btn.config(state=live_state)
         self.run_wrer_btn.config(state=live_state)
+        self.preview_wrer_btn.config(state=preview_state)
         self.sweep_stop_btn.config(state=stop_state)
         self.stop_btn.config(state=stop_state)
         self.plot_btn.config(state="normal" if self.logger.rows else "disabled")
@@ -680,6 +694,7 @@ class KeithleyUI:
             self.row_cycle_ids.append(0)
             self.row_time_s.append(None)
             self.active_plot_mode = "iv"
+            self._last_run_mode = "iv"
             self.status_text.set(f"I={current:.6e} A @ V={self.last_voltage:.6g} V")
             self._refresh_embedded_plot()
             self._update_button_states()
@@ -703,6 +718,7 @@ class KeithleyUI:
             self.row_cycle_ids.append(0)
             self.row_time_s.append(None)
             self.active_plot_mode = "iv"
+            self._last_run_mode = "iv"
             if len(self.logger.rows) > self.max_live_points:
                 self.logger.rows = self.logger.rows[-self.max_live_points:]
                 self.row_cycle_ids = self.row_cycle_ids[-self.max_live_points:]
@@ -717,6 +733,60 @@ class KeithleyUI:
             self.live_after_id = None
             self._update_button_states()
             messagebox.showerror("Error", str(e))
+
+    def preview_wrer(self):
+        try:
+            delay = float(self.sweep_delay_entry.get())
+            write_v = float(self.wrer_write_v_entry.get())
+            write_t = float(self.wrer_write_t_entry.get())
+            read_v = float(self.wrer_read_v_entry.get())
+            read_t = float(self.wrer_read_t_entry.get())
+            erase_v = float(self.wrer_erase_v_entry.get())
+            erase_t = float(self.wrer_erase_t_entry.get())
+            cycles = int(self.wrer_cycles_entry.get())
+        except ValueError:
+            messagebox.showerror("Error", "WRER fields must be valid numbers")
+            return
+
+        if cycles < 1 or write_t <= 0 or read_t <= 0 or erase_t <= 0 or delay <= 0:
+            messagebox.showerror("Error", "Invalid time/cycle parameters")
+            return
+        voltages_to_check = [write_v, read_v, erase_v]
+        if any(abs(v) > self.connection.MAX_ABS_VOLTAGE for v in voltages_to_check):
+            messagebox.showerror(
+                "Error",
+                f"WRER voltages must be within +/-{self.connection.MAX_ABS_VOLTAGE:g} V",
+            )
+            return
+        if max(abs(v) for v in voltages_to_check) > self.SAFE_VOLTAGE_LIMIT:
+            proceed = messagebox.askyesno(
+                "High Voltage Warning",
+                f"WRER includes voltage above {self.SAFE_VOLTAGE_LIMIT:g} V.\nContinue preview?",
+            )
+            if not proceed:
+                return
+        total_points = self._estimate_wrer_total_points(write_t, read_t, erase_t, delay, cycles)
+        if not self._confirm_large_wrer_sequence(total_points, action="Preview"):
+            return
+
+        values, _ = self._build_wrer_values_with_cycles(
+            write_v=write_v,
+            write_t=write_t,
+            read_v=read_v,
+            read_t=read_t,
+            erase_v=erase_v,
+            erase_t=erase_t,
+            sample_interval_s=delay,
+            cycles=cycles,
+        )
+
+        if not values:
+            messagebox.showinfo("Preview", "No points generated")
+            return
+
+        times = [i * delay for i in range(len(values))]
+        dummy_currents = [0.0] * len(values)
+        IVPlotter.show_time_series(times, values, dummy_currents, title="WRER Preview (Voltage Profile)", current_yscale="linear")
 
     def run_sweep_from_inputs(self):
         if self.live_running:
@@ -909,6 +979,9 @@ class KeithleyUI:
             )
             if not proceed:
                 return
+        total_points = self._estimate_wrer_total_points(write_t, read_t, erase_t, delay, cycles)
+        if not self._confirm_large_wrer_sequence(total_points, action="Run"):
+            return
         values, cycle_ids = self._build_wrer_values_with_cycles(
             write_v=write_v,
             write_t=write_t,
@@ -949,6 +1022,7 @@ class KeithleyUI:
             self.row_cycle_ids = []
             self.row_time_s = []
             self.active_plot_mode = plot_mode
+            self._last_run_mode = plot_mode
             reset_file = True
             if os.path.exists(file_path):
                 choice = messagebox.askyesnocancel(
@@ -999,6 +1073,9 @@ class KeithleyUI:
         else:
             self.step_label.config(text="Step (V)")
             self.sweep_step_entry.config(state="normal")
+        # Reflect selected sweep mode immediately on the embedded plot view.
+        if hasattr(self, "x_axis_scale_combo") and hasattr(self, "y_axis_scale_combo") and hasattr(self, "figure"):
+            self._refresh_embedded_plot()
 
     def _add_sequence_segment(self):
         try:
@@ -1125,6 +1202,43 @@ class KeithleyUI:
             values.extend(single)
             cycle_ids.extend([cycle_idx] * len(single))
         return values, cycle_ids
+
+    @staticmethod
+    def _estimate_hold_points(hold_time_s: float, sample_interval_s: float):
+        if hold_time_s <= 0 or sample_interval_s <= 0:
+            return 0
+        return max(1, int(round(hold_time_s / sample_interval_s)))
+
+    @classmethod
+    def _estimate_wrer_total_points(
+        cls,
+        write_t: float,
+        read_t: float,
+        erase_t: float,
+        sample_interval_s: float,
+        cycles: int,
+    ):
+        if cycles < 1:
+            return 0
+        single = (
+            cls._estimate_hold_points(write_t, sample_interval_s)
+            + cls._estimate_hold_points(read_t, sample_interval_s)
+            + cls._estimate_hold_points(erase_t, sample_interval_s)
+            + cls._estimate_hold_points(read_t, sample_interval_s)
+        )
+        return single * cycles
+
+    def _confirm_large_wrer_sequence(self, total_points: int, action: str):
+        if total_points <= self.WRER_WARN_POINTS:
+            return True
+        return messagebox.askyesno(
+            "Large WRER Sequence",
+            (
+                f"{action} will generate about {total_points:,} points.\n"
+                "This may take a long time and can make plotting slower.\n"
+                "Continue?"
+            ),
+        )
 
     def sweep_example(self, voltages, cycle_ids=None, point_times=None):
         self.stop_flag = False
@@ -1302,6 +1416,7 @@ class KeithleyUI:
             self.row_cycle_ids = [0] * len(self.logger.rows)
             self.row_time_s = [None] * len(self.logger.rows)
             self.active_plot_mode = "iv"
+            self._last_run_mode = "iv"
             self._refresh_embedded_plot()
             self._update_button_states()
             messagebox.showinfo("Loaded", f"Loaded data from:\n{file_path}")
@@ -1313,6 +1428,7 @@ class KeithleyUI:
         self.row_cycle_ids = []
         self.row_time_s = []
         self.active_plot_mode = "iv"
+        self._last_run_mode = "iv"
         self._refresh_embedded_plot()
         self._update_button_states()
         self.status_text.set("Data cleared")
@@ -1321,18 +1437,23 @@ class KeithleyUI:
         if not self.logger.rows:
             messagebox.showinfo("Plot", "No data to plot")
             return
+        self._sync_active_plot_mode_from_data()
         if self.active_plot_mode == "wrer":
             tx, vy, iy = self._build_wrer_plot_series()
             if not tx:
                 messagebox.showinfo("Plot", "No WRER time data to plot")
                 return
             _, yscale = self._get_axis_scales()
+            x_right = max(tx) if tx else 0.0
+            if x_right <= 0:
+                x_right = 1.0
             IVPlotter.show_time_series(
                 times=tx,
                 voltages=vy,
                 currents=iy,
                 title=self._current_plot_title(),
                 current_yscale=yscale,
+                xlim=(0.0, x_right),
             )
             return
         xscale, yscale = self._get_axis_scales()
@@ -1362,24 +1483,20 @@ class KeithleyUI:
         )
 
     def _refresh_embedded_plot(self):
+        self._sync_active_plot_mode_from_data()
         if self.active_plot_mode == "wrer":
             tx, vy, iy = self._build_wrer_plot_series()
             _, yscale = self._get_axis_scales()
             self.figure.clear()
+            # Re-assign self.ax to None since it's destroyed, and create the two new axes
+            self.ax = None
             ax_v = self.figure.add_subplot(211)
             ax_i = self.figure.add_subplot(212, sharex=ax_v)
             ax_v.grid(True)
             ax_i.grid(True)
             ax_v.plot(tx, vy, linestyle="-", marker="o")
             if yscale == "log":
-                tx_i = []
-                iy_i = []
-                for t, i in zip(tx, iy):
-                    ai = abs(i)
-                    if ai == 0:
-                        continue
-                    tx_i.append(t)
-                    iy_i.append(ai)
+                tx_i, iy_i = IVPlotter.prepare_log_y_data(tx, iy)
                 ax_i.set_yscale("log")
                 ax_i.plot(tx_i, iy_i, linestyle="-", marker="o")
             else:
@@ -1389,11 +1506,22 @@ class KeithleyUI:
             ax_i.set_ylabel("Current (A)")
             ax_i.set_xlabel("Time (s)")
             ax_v.set_title(self._current_plot_title())
+            x_right = max(tx) if tx else 0.0
+            if x_right <= 0:
+                x_right = 1.0
+            ax_v.set_xlim(left=0.0, right=x_right)
             self.canvas.draw_idle()
             return
         xscale, yscale = self._get_axis_scales()
         cycle_series = self._build_cycle_series(xscale, yscale)
-        self.ax.clear()
+
+        # If we switched from WRER, the single axis `self.ax` was destroyed. Recreate it.
+        if not self.ax or not self.figure.axes or len(self.figure.axes) != 1:
+            self.figure.clear()
+            self.ax = self.figure.add_subplot(111)
+        else:
+            self.ax.clear()
+
         self.ax.grid(True)
         self.ax.set_xscale(xscale)
         self.ax.set_yscale(yscale)
@@ -1426,27 +1554,35 @@ class KeithleyUI:
         yscale = "log" if self.y_axis_scale_combo.get().lower() == "log" else "linear"
         return xscale, yscale
 
-    @staticmethod
-    def _prepare_plot_data(voltages, currents, xscale, yscale):
-        if xscale == "linear" and yscale == "linear":
-            return voltages, currents
-        px = []
-        py = []
-        for v, i in zip(voltages, currents):
-            if xscale == "log" and v <= 0:
-                continue
-            if yscale == "log":
-                i = abs(i)
-                if i == 0:
-                    continue
-            px.append(v)
-            py.append(i)
-        return px, py
-
     def _current_plot_title(self):
         if self.logger.output_file:
             return f"I-V Data - {self.logger.output_file.name}"
         return "Live I-V Data"
+
+    def _infer_plot_mode_from_data(self):
+        rows_len = len(self.logger.rows)
+        if rows_len == 0:
+            return self._selected_sweep_plot_mode()
+        times = list(self.row_time_s)
+        if len(times) < rows_len:
+            times.extend([None] * (rows_len - len(times)))
+        elif len(times) > rows_len:
+            times = times[:rows_len]
+        return "wrer" if any(t is not None for t in times) else "iv"
+
+    def _selected_sweep_plot_mode(self):
+        try:
+            if hasattr(self, "sweep_subtabs"):
+                current_idx = self.sweep_subtabs.index(self.sweep_subtabs.select())
+                return "wrer" if current_idx == 2 else "iv"
+        except Exception:
+            pass
+        return self._last_run_mode if self._last_run_mode in ("iv", "wrer") else "iv"
+
+    def _sync_active_plot_mode_from_data(self):
+        inferred = self._infer_plot_mode_from_data()
+        if inferred in ("iv", "wrer"):
+            self.active_plot_mode = inferred
 
     def _build_cycle_series(self, xscale, yscale):
         cycle_ids = list(self.row_cycle_ids)
@@ -1591,6 +1727,3 @@ class KeithleyUI:
         cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip())
         cleaned = cleaned.strip("-_")
         return cleaned[:40]
-
-
-
