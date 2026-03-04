@@ -26,6 +26,7 @@ Desktop app for Keithley source-meter control and I-V/WRER measurement workflows
 - `data_logging.py` - CSV logging/load
 - `plotting.py` - popup plotting
 - `KeithleyIV.spec` - PyInstaller build spec
+- `assets/screenshots/` - UI screenshots used in this README
 
 ## Requirements
 - Windows (for current EXE build)
@@ -48,6 +49,21 @@ python main.py
 - Use: `dist\KeithleyIV\KeithleyIV.exe`
 - Keep `_internal` folder in the same directory as the exe.
 - On first run, Windows SmartScreen may warn because exe is unsigned.
+
+## Screenshots
+Add screenshots to `assets/screenshots/` using the filenames below.
+
+### Main Window
+![Main Window](assets/screenshots/main-window.png)
+
+### Standard Sweep Tab
+![Standard Sweep](assets/screenshots/standard-sweep.png)
+
+### WRER Tab
+![WRER Tab](assets/screenshots/wrer-tab.png)
+
+### WRER Time Plot
+![WRER Plot](assets/screenshots/wrer-plot.png)
 
 ## Basic Workflow
 1. `Setup` tab:
