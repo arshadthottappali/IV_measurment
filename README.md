@@ -54,16 +54,16 @@ python main.py
 Add screenshots to `assets/screenshots/` using the filenames below.
 
 ### Main Window
-![Main Window](assets/screenshots/main-window.png)
+![Main Window](assets/screenshots/Main%20Window.png)
 
 ### Standard Sweep Tab
-![Standard Sweep](assets/screenshots/standard-sweep.png)
+![Standard Sweep](assets/screenshots/Standard%20Sweep.png)
 
 ### WRER Tab
-![WRER Tab](assets/screenshots/wrer-tab.png)
+![WRER Tab](assets/screenshots/WRER%20Tab.png)
 
 ### WRER Time Plot
-![WRER Plot](assets/screenshots/wrer-plot.png)
+![WRER Plot](assets/screenshots/WRER%20Plot.png)
 
 ## Basic Workflow
 1. `Setup` tab:
