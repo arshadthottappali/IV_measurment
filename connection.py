@@ -62,7 +62,7 @@ class KeithleyConnection:
         try:
             self.idn = self._query_id()
             self._validate_instrument_identity()
-            self.mode = "tsp2600" if "2602" in self.idn.upper() else "scpi"
+            self.mode = "tsp2600" if self._looks_like_2600_tsp_model(self.idn) else "scpi"
             if self.mode == "tsp2600":
                 self._setup_2600_defaults()
             else:
@@ -139,12 +139,12 @@ class KeithleyConnection:
         original_timeout = getattr(self.inst, "timeout", 5000)
         # Estimate sweep time and add a large safety margin for instrument processing.
         # The total time is more than just sum of delays.
-        # We use a safety factor and also clamp to a reasonable range (20s to 5min).
+        # We use a safety factor and enforce a 20s minimum, but do not cap long runs.
         estimated_sweep_s = len(voltages) * max(delay_s, 1e-6)
         safety_factor = 8
         estimated_ms = int(estimated_sweep_s * 1000 * safety_factor)
-        clamped_timeout_ms = max(20_000, min(300_000, estimated_ms))
-        self.inst.timeout = max(original_timeout, clamped_timeout_ms)
+        timeout_ms = max(20_000, estimated_ms)
+        self.inst.timeout = max(original_timeout, timeout_ms)
         logger.info(
             "Fast TSP sweep timeout set to %d ms (original %d ms, points=%d, delay=%s s)",
             self.inst.timeout,
@@ -365,6 +365,10 @@ class KeithleyConnection:
     def _is_resource_not_present_error(error: Exception) -> bool:
         msg = str(error)
         return ("0xBFFF0011" in msg) or ("Insufficient location information" in msg)
+
+    @staticmethod
+    def _looks_like_2600_tsp_model(identity: str) -> bool:
+        return re.search(r"\b26\d{2}[A-Z]?\b", identity.upper()) is not None
 
     def _write(self, cmd: str):
         try:

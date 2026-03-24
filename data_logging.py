@@ -15,6 +15,8 @@ class Measurement:
     sample_name: str = ""
     operator: str = ""
     notes: str = ""
+    elapsed_s: float | None = None
+    cycle_id: int = 0
 
 
 class DataLogger:
@@ -51,7 +53,18 @@ class DataLogger:
         if reset_file:
             with self.output_file.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["timestamp", "voltage", "current", "sample_name", "operator", "notes"])
+                writer.writerow(
+                    [
+                        "timestamp",
+                        "voltage",
+                        "current",
+                        "sample_name",
+                        "operator",
+                        "notes",
+                        "elapsed_s",
+                        "cycle_id",
+                    ]
+                )
 
     def clear(self):
         self.rows.clear()
@@ -63,10 +76,30 @@ class DataLogger:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["timestamp", "voltage", "current", "sample_name", "operator", "notes"])
+            writer.writerow(
+                [
+                    "timestamp",
+                    "voltage",
+                    "current",
+                    "sample_name",
+                    "operator",
+                    "notes",
+                    "elapsed_s",
+                    "cycle_id",
+                ]
+            )
             for row in self.rows:
                 writer.writerow(
-                    [row.timestamp, row.voltage, row.current, row.sample_name, row.operator, row.notes]
+                    [
+                        row.timestamp,
+                        row.voltage,
+                        row.current,
+                        row.sample_name,
+                        row.operator,
+                        row.notes,
+                        "" if row.elapsed_s is None else row.elapsed_s,
+                        row.cycle_id,
+                    ]
                 )
 
     def load_csv(self, file_path: str):
@@ -96,6 +129,12 @@ class DataLogger:
                             sample_name=(row.get("sample_name") or "").strip(),
                             operator=(row.get("operator") or "").strip(),
                             notes=(row.get("notes") or "").strip(),
+                            elapsed_s=(
+                                float((row.get("elapsed_s") or "").strip())
+                                if (row.get("elapsed_s") or "").strip()
+                                else None
+                            ),
+                            cycle_id=int((row.get("cycle_id") or "0").strip() or "0"),
                         )
                     )
                 except (ValueError, TypeError) as e:
@@ -113,5 +152,27 @@ class DataLogger:
         with self.output_file.open("a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if file_missing_or_empty:
-                writer.writerow(["timestamp", "voltage", "current", "sample_name", "operator", "notes"])
-            writer.writerow([row.timestamp, row.voltage, row.current, row.sample_name, row.operator, row.notes])
+                writer.writerow(
+                    [
+                        "timestamp",
+                        "voltage",
+                        "current",
+                        "sample_name",
+                        "operator",
+                        "notes",
+                        "elapsed_s",
+                        "cycle_id",
+                    ]
+                )
+            writer.writerow(
+                [
+                    row.timestamp,
+                    row.voltage,
+                    row.current,
+                    row.sample_name,
+                    row.operator,
+                    row.notes,
+                    "" if row.elapsed_s is None else row.elapsed_s,
+                    row.cycle_id,
+                ]
+            )

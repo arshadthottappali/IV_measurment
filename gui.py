@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from datetime import datetime
@@ -48,6 +49,10 @@ class KeithleyUI:
         self._sweep_point_times = []
         self.active_plot_mode = "iv"
         self._last_run_mode = "iv"
+        self._fast_sweep_thread = None
+        self._fast_sweep_result = None
+        self._fast_sweep_error = None
+        self._fast_sweep_poll_after_id = None
 
         self.status_text = tk.StringVar(value="Disconnected")
         self.connection_text = tk.StringVar(value="Disconnected")
@@ -612,6 +617,13 @@ class KeithleyUI:
         self.connect_btn.config(state="normal")
         self.sample_rate.config(state="readonly" if connected_state == "normal" else "disabled")
 
+    def _annotate_last_row(self, cycle_id=0, point_t=None):
+        if not self.logger.rows:
+            return
+        row = self.logger.rows[-1]
+        row.cycle_id = int(cycle_id)
+        row.elapsed_s = None if point_t is None else float(point_t)
+
     def detect(self):
         self.listbox.delete(0, tk.END)
         try:
@@ -693,6 +705,7 @@ class KeithleyUI:
             self.logger.add(self.last_voltage, current, auto_save=self.autosave_enabled and self.logger.output_file is not None)
             self.row_cycle_ids.append(0)
             self.row_time_s.append(None)
+            self._annotate_last_row(cycle_id=0, point_t=None)
             self.active_plot_mode = "iv"
             self._last_run_mode = "iv"
             self.status_text.set(f"I={current:.6e} A @ V={self.last_voltage:.6g} V")
@@ -717,6 +730,7 @@ class KeithleyUI:
             self.logger.add(self.last_voltage, current, auto_save=False)
             self.row_cycle_ids.append(0)
             self.row_time_s.append(None)
+            self._annotate_last_row(cycle_id=0, point_t=None)
             self.active_plot_mode = "iv"
             self._last_run_mode = "iv"
             if len(self.logger.rows) > self.max_live_points:
@@ -1016,6 +1030,13 @@ class KeithleyUI:
         if not file_path:
             return
 
+        if sweep_exec == "Fast TSP (instrument timing)" and self.connection.mode != "tsp2600":
+            messagebox.showerror(
+                "Error",
+                "Fast TSP execution is available only when connected to Keithley 2600 in TSP mode.",
+            )
+            return
+
         try:
             self._sync_metadata()
             self.logger.clear()
@@ -1041,12 +1062,6 @@ class KeithleyUI:
             self.save_dir_text.set(f"Save folder: {self.preferred_save_dir}")
             self.sweep_delay_ms = int(delay * 1000)
             if sweep_exec == "Fast TSP (instrument timing)":
-                if self.connection.mode != "tsp2600":
-                    messagebox.showerror(
-                        "Error",
-                        "Fast TSP execution is available only when connected to Keithley 2600 in TSP mode.",
-                    )
-                    return
                 self._run_fast_instrument_sweep(values, delay, cycle_ids=cycle_ids, point_times=point_times)
             else:
                 self.sweep_example(values, cycle_ids=cycle_ids, point_times=point_times)
@@ -1275,6 +1290,7 @@ class KeithleyUI:
             self.row_cycle_ids.append(cycle_id)
             point_t = self._sweep_point_times[self._sweep_index] if self._sweep_index < len(self._sweep_point_times) else None
             self.row_time_s.append(point_t)
+            self._annotate_last_row(cycle_id=cycle_id, point_t=point_t)
             self.status_text.set(f"Sweep: point {self._sweep_index + 1}/{len(self._sweep_values)} | I={current:.6e} A")
             self._sweep_index += 1
             self.sweep_progress.config(value=self._sweep_index)
@@ -1300,13 +1316,43 @@ class KeithleyUI:
         self.status_text.set("Fast TSP sweep running on instrument...")
         self._update_button_states()
         self.root.update_idletasks()
+        self._fast_sweep_result = None
+        self._fast_sweep_error = None
+        self._fast_sweep_thread = threading.Thread(
+            target=self._fast_sweep_worker,
+            args=(list(voltages), delay_s),
+            daemon=True,
+        )
+        self._fast_sweep_thread.start()
+        self._fast_sweep_poll_after_id = self.root.after(100, self._poll_fast_sweep_result)
+
+    def _fast_sweep_worker(self, voltages, delay_s):
+        try:
+            self._fast_sweep_result = self.connection.run_tsp_sweep(voltages, delay_s)
+        except Exception as e:
+            self._fast_sweep_error = e
+
+    def _poll_fast_sweep_result(self):
+        self._fast_sweep_poll_after_id = None
+        if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
+            self._fast_sweep_poll_after_id = self.root.after(100, self._poll_fast_sweep_result)
+            return
+
+        pairs = self._fast_sweep_result or []
+        error = self._fast_sweep_error
+        self._fast_sweep_thread = None
+        self._fast_sweep_result = None
+        self._fast_sweep_error = None
 
         try:
-            pairs = self.connection.run_tsp_sweep(voltages, delay_s)
+            if error is not None:
+                messagebox.showerror("Error", str(error))
+                return
+            if self.stop_flag:
+                self.status_text.set("Fast sweep stopped after instrument run completed")
+                return
             total = len(pairs)
             for idx, (v, i) in enumerate(pairs, start=1):
-                if self.stop_flag:
-                    break
                 self.last_voltage = v
                 self._sync_metadata()
                 self.logger.add(v, i, auto_save=self.autosave_enabled)
@@ -1314,14 +1360,13 @@ class KeithleyUI:
                 self.row_cycle_ids.append(cycle_id)
                 point_t = self._sweep_point_times[idx - 1] if idx - 1 < len(self._sweep_point_times) else None
                 self.row_time_s.append(point_t)
+                self._annotate_last_row(cycle_id=cycle_id, point_t=point_t)
                 self._sweep_index = idx
                 self.sweep_progress.config(value=idx)
                 self.progress_text.set(f"Sweep progress: {idx}/{total}")
             self._refresh_embedded_plot()
             self._update_eta()
             self.status_text.set(f"Fast sweep complete: {self._sweep_index} points")
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
         finally:
             self._finish_sweep()
 
@@ -1334,6 +1379,10 @@ class KeithleyUI:
         if self.live_after_id:
             self.root.after_cancel(self.live_after_id)
             self.live_after_id = None
+        if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
+            self.status_text.set("Stop requested. Waiting for instrument fast sweep to finish...")
+            self._update_button_states()
+            return
         self._finish_sweep(reset_progress=False)
         try:
             self.connection.zero_output()
@@ -1345,6 +1394,7 @@ class KeithleyUI:
     def _finish_sweep(self, reset_progress=True):
         self.sweep_running = False
         self.sweep_after_id = None
+        self._fast_sweep_poll_after_id = None
         try:
             if self.connected:
                 self.connection.zero_output()
@@ -1412,11 +1462,13 @@ class KeithleyUI:
             self.save_path_text.set(f"Save path: {file_path}")
             self.preferred_save_dir = os.path.dirname(file_path) or self.preferred_save_dir
             self.save_dir_text.set(f"Save folder: {self.preferred_save_dir}")
+            self.autosave_enabled = False
             self.autosave_text.set("Auto-save: OFF (loaded data)")
-            self.row_cycle_ids = [0] * len(self.logger.rows)
-            self.row_time_s = [None] * len(self.logger.rows)
-            self.active_plot_mode = "iv"
-            self._last_run_mode = "iv"
+            self.row_cycle_ids = [getattr(row, "cycle_id", 0) for row in self.logger.rows]
+            self.row_time_s = [getattr(row, "elapsed_s", None) for row in self.logger.rows]
+            loaded_mode = "wrer" if any(t is not None for t in self.row_time_s) else "iv"
+            self.active_plot_mode = loaded_mode
+            self._last_run_mode = loaded_mode
             self._refresh_embedded_plot()
             self._update_button_states()
             messagebox.showinfo("Loaded", f"Loaded data from:\n{file_path}")
