@@ -2,6 +2,7 @@ import os
 import re
 import json
 import threading
+import math
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from datetime import datetime
@@ -49,10 +50,13 @@ class KeithleyUI:
         self._sweep_point_times = []
         self.active_plot_mode = "iv"
         self._last_run_mode = "iv"
+        self._pd_steps = []
+        self._pd_read_index = 0
         self._fast_sweep_thread = None
         self._fast_sweep_result = None
         self._fast_sweep_error = None
         self._fast_sweep_poll_after_id = None
+        self._closing = False
 
         self.status_text = tk.StringVar(value="Disconnected")
         self.connection_text = tk.StringVar(value="Disconnected")
@@ -222,30 +226,58 @@ class KeithleyUI:
         self.sweep_step_entry.insert(0, "0.1")
         self.sweep_step_entry.grid(row=0, column=1, sticky="ew")
 
-        ttk.Label(common, text="Delay (s)").grid(row=1, column=0, sticky="w")
+        self.delay_label = ttk.Label(common, text="Delay (s)")
+        self.delay_label.grid(row=1, column=0, sticky="w")
         self.sweep_delay_entry = ttk.Entry(common, width=12)
         self.sweep_delay_entry.insert(0, "1")
         self.sweep_delay_entry.grid(row=1, column=1, sticky="ew")
 
-        ttk.Label(common, text="Execution").grid(row=2, column=0, sticky="w")
+        self.pd_compliance_label = ttk.Label(common, text="PD Compliance (uA)")
+        self.pd_compliance_label.grid(row=2, column=0, sticky="w")
+        self.pd_compliance_entry = ttk.Entry(common, width=12)
+        self.pd_compliance_entry.insert(0, "1")
+        self.pd_compliance_entry.grid(row=2, column=1, sticky="ew")
+
+        self.pd_test_no_label = ttk.Label(common, text="PD Test No")
+        self.pd_test_no_label.grid(row=3, column=0, sticky="w")
+        self.pd_test_no_entry = ttk.Entry(common, width=12)
+        self.pd_test_no_entry.insert(0, "01")
+        self.pd_test_no_entry.grid(row=3, column=1, sticky="ew")
+
+        self.pd_sample_label = ttk.Label(common, text="PD Sample Name")
+        self.pd_sample_label.grid(row=4, column=0, sticky="w")
+        self.pd_sample_entry = ttk.Entry(common, width=12)
+        self.pd_sample_entry.grid(row=4, column=1, sticky="ew")
+
+        self.pd_electrode_label = ttk.Label(common, text="Electrode Sign")
+        self.pd_electrode_label.grid(row=5, column=0, sticky="w")
+        self.pd_electrode_entry = ttk.Entry(common, width=12)
+        self.pd_electrode_entry.grid(row=5, column=1, sticky="ew")
+
+        self.pd_electrode_no_label = ttk.Label(common, text="Electrode No")
+        self.pd_electrode_no_label.grid(row=6, column=0, sticky="w")
+        self.pd_electrode_no_entry = ttk.Entry(common, width=12)
+        self.pd_electrode_no_entry.grid(row=6, column=1, sticky="ew")
+
+        ttk.Label(common, text="Execution").grid(row=7, column=0, sticky="w")
         self.sweep_exec_combo = ttk.Combobox(
             common,
             state="readonly",
             values=["Host (UI timing)", "Fast TSP (instrument timing)"],
         )
         self.sweep_exec_combo.set("Host (UI timing)")
-        self.sweep_exec_combo.grid(row=2, column=1, sticky="ew")
+        self.sweep_exec_combo.grid(row=7, column=1, sticky="ew")
         self.sweep_exec_combo.bind("<<ComboboxSelected>>", self._on_sweep_exec_change)
 
         self.fast_limit_label = ttk.Label(common, text="Fast Limit")
-        self.fast_limit_label.grid(row=3, column=0, sticky="w")
+        self.fast_limit_label.grid(row=8, column=0, sticky="w")
         self.fast_limit_combo = ttk.Combobox(
             common,
             state="readonly",
             values=["1 ms", "500 ns"],
         )
         self.fast_limit_combo.set("1 ms")
-        self.fast_limit_combo.grid(row=3, column=1, sticky="ew")
+        self.fast_limit_combo.grid(row=8, column=1, sticky="ew")
         self._on_sweep_exec_change()
 
         sweep_tabs = ttk.Notebook(frame)
@@ -253,12 +285,15 @@ class KeithleyUI:
         standard_tab = ttk.Frame(sweep_tabs, padding=6)
         custom_tab = ttk.Frame(sweep_tabs, padding=6)
         wrer_tab = ttk.Frame(sweep_tabs, padding=6)
+        pd_tab = ttk.Frame(sweep_tabs, padding=6)
         standard_tab.columnconfigure(1, weight=1)
         custom_tab.columnconfigure(1, weight=1)
         wrer_tab.columnconfigure(1, weight=1)
+        pd_tab.columnconfigure(1, weight=1)
         sweep_tabs.add(standard_tab, text="Standard Sweep")
         sweep_tabs.add(custom_tab, text="Custom Sequence")
         sweep_tabs.add(wrer_tab, text="WRER")
+        sweep_tabs.add(pd_tab, text="PD")
         self.sweep_subtabs = sweep_tabs
         self.sweep_subtabs.bind("<<NotebookTabChanged>>", self._on_sweep_subtab_changed)
 
@@ -389,6 +424,78 @@ class KeithleyUI:
         self.run_wrer_btn = ttk.Button(wrer_tab, text="Run WRER", command=self.run_wrer_from_inputs)
         self.run_wrer_btn.grid(row=8, column=1, sticky="ew", pady=(6, 0))
 
+        ttk.Label(pd_tab, text="Potentiation", font=("", 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Label(pd_tab, text="V").grid(row=1, column=0, sticky="w")
+        self.pd_pot_v_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_pot_v_entry.insert(0, "1")
+        self.pd_pot_v_entry.grid(row=1, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Time (s)").grid(row=2, column=0, sticky="w")
+        self.pd_pot_t_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_pot_t_entry.insert(0, "0.1")
+        self.pd_pot_t_entry.grid(row=2, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Pulses").grid(row=3, column=0, sticky="w")
+        self.pd_pot_pulses_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_pot_pulses_entry.insert(0, "10")
+        self.pd_pot_pulses_entry.grid(row=3, column=1, sticky="ew")
+
+        ttk.Separator(pd_tab, orient="horizontal").grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+
+        ttk.Label(pd_tab, text="Depression", font=("", 9, "bold")).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Label(pd_tab, text="V").grid(row=6, column=0, sticky="w")
+        self.pd_dep_v_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_dep_v_entry.insert(0, "-1")
+        self.pd_dep_v_entry.grid(row=6, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Time (s)").grid(row=7, column=0, sticky="w")
+        self.pd_dep_t_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_dep_t_entry.insert(0, "0.1")
+        self.pd_dep_t_entry.grid(row=7, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Pulses").grid(row=8, column=0, sticky="w")
+        self.pd_dep_pulses_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_dep_pulses_entry.insert(0, "10")
+        self.pd_dep_pulses_entry.grid(row=8, column=1, sticky="ew")
+
+        ttk.Separator(pd_tab, orient="horizontal").grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+
+        ttk.Label(pd_tab, text="Read", font=("", 9, "bold")).grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Label(pd_tab, text="V").grid(row=11, column=0, sticky="w")
+        self.pd_read_v_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_read_v_entry.insert(0, "0.1")
+        self.pd_read_v_entry.grid(row=11, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Time (s)").grid(row=12, column=0, sticky="w")
+        self.pd_read_t_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_read_t_entry.insert(0, "0.1")
+        self.pd_read_t_entry.grid(row=12, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Stim->Read Delay (s)").grid(row=13, column=0, sticky="w")
+        self.pd_settle_t_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_settle_t_entry.insert(0, "0.01")
+        self.pd_settle_t_entry.grid(row=13, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Read->Stim Delay (s)").grid(row=14, column=0, sticky="w")
+        self.pd_gap_t_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_gap_t_entry.insert(0, "0")
+        self.pd_gap_t_entry.grid(row=14, column=1, sticky="ew")
+
+        ttk.Label(pd_tab, text="Cycles").grid(row=15, column=0, sticky="w")
+        self.pd_cycles_entry = ttk.Entry(pd_tab, width=12)
+        self.pd_cycles_entry.insert(0, "1")
+        self.pd_cycles_entry.grid(row=15, column=1, sticky="ew")
+
+        ttk.Label(
+            pd_tab,
+            text="Applies fixed pot/dep pulses, forces 0 V during Stim->Read Delay, then measures at Read V. Read->Stim Delay is the gap after each read.",
+            wraplength=320,
+        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.preview_pd_btn = ttk.Button(pd_tab, text="Preview Sequence", command=self.preview_pd)
+        self.preview_pd_btn.grid(row=17, column=0, sticky="ew", pady=(6, 0), padx=(0, 4))
+        self.run_pd_btn = ttk.Button(pd_tab, text="Run PD", command=self.run_pd_from_inputs)
+        self.run_pd_btn.grid(row=17, column=1, sticky="ew", pady=(6, 0))
+
         progress_row = ttk.Frame(frame)
         progress_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         progress_row.columnconfigure(0, weight=1)
@@ -469,6 +576,11 @@ class KeithleyUI:
             "sweep_stop_v": self.sweep_stop_entry,
             "sweep_step_v": self.sweep_step_entry,
             "sweep_delay_s": self.sweep_delay_entry,
+            "pd_compliance_ua": self.pd_compliance_entry,
+            "pd_test_no": self.pd_test_no_entry,
+            "pd_sample_name": self.pd_sample_entry,
+            "pd_electrode_sign": self.pd_electrode_entry,
+            "pd_electrode_no": self.pd_electrode_no_entry,
             "cycle_peak_v": self.cycle_peak_entry,
             "sweep_cycles": self.sweep_cycles_entry,
             "seq_start_v": self.seq_start_entry,
@@ -481,6 +593,17 @@ class KeithleyUI:
             "wrer_erase_v": self.wrer_erase_v_entry,
             "wrer_erase_t": self.wrer_erase_t_entry,
             "wrer_cycles": self.wrer_cycles_entry,
+            "pd_pot_v": self.pd_pot_v_entry,
+            "pd_pot_t": self.pd_pot_t_entry,
+            "pd_pot_pulses": self.pd_pot_pulses_entry,
+            "pd_read_v": self.pd_read_v_entry,
+            "pd_read_t": self.pd_read_t_entry,
+            "pd_settle_t": self.pd_settle_t_entry,
+            "pd_gap_t": self.pd_gap_t_entry,
+            "pd_dep_v": self.pd_dep_v_entry,
+            "pd_dep_t": self.pd_dep_t_entry,
+            "pd_dep_pulses": self.pd_dep_pulses_entry,
+            "pd_cycles": self.pd_cycles_entry,
             "sample_name": self.sample_entry,
             "operator": self.operator_entry,
             "notes": self.notes_entry,
@@ -551,6 +674,11 @@ class KeithleyUI:
             "sweep_stop_v": self.sweep_stop_entry.get(),
             "sweep_step_v": self.sweep_step_entry.get(),
             "sweep_delay_s": self.sweep_delay_entry.get(),
+            "pd_compliance_ua": self.pd_compliance_entry.get(),
+            "pd_test_no": self.pd_test_no_entry.get(),
+            "pd_sample_name": self.pd_sample_entry.get(),
+            "pd_electrode_sign": self.pd_electrode_entry.get(),
+            "pd_electrode_no": self.pd_electrode_no_entry.get(),
             "cycle_peak_v": self.cycle_peak_entry.get(),
             "sweep_cycles": self.sweep_cycles_entry.get(),
             "seq_start_v": self.seq_start_entry.get(),
@@ -563,6 +691,17 @@ class KeithleyUI:
             "wrer_erase_v": self.wrer_erase_v_entry.get(),
             "wrer_erase_t": self.wrer_erase_t_entry.get(),
             "wrer_cycles": self.wrer_cycles_entry.get(),
+            "pd_pot_v": self.pd_pot_v_entry.get(),
+            "pd_pot_t": self.pd_pot_t_entry.get(),
+            "pd_pot_pulses": self.pd_pot_pulses_entry.get(),
+            "pd_read_v": self.pd_read_v_entry.get(),
+            "pd_read_t": self.pd_read_t_entry.get(),
+            "pd_settle_t": self.pd_settle_t_entry.get(),
+            "pd_gap_t": self.pd_gap_t_entry.get(),
+            "pd_dep_v": self.pd_dep_v_entry.get(),
+            "pd_dep_t": self.pd_dep_t_entry.get(),
+            "pd_dep_pulses": self.pd_dep_pulses_entry.get(),
+            "pd_cycles": self.pd_cycles_entry.get(),
             "sample_name": self.sample_entry.get(),
             "operator": self.operator_entry.get(),
             "notes": self.notes_entry.get(),
@@ -605,7 +744,9 @@ class KeithleyUI:
         self.run_sweep_btn.config(state=live_state)
         self.run_custom_sweep_btn.config(state=live_state)
         self.run_wrer_btn.config(state=live_state)
+        self.run_pd_btn.config(state=live_state)
         self.preview_wrer_btn.config(state=preview_state)
+        self.preview_pd_btn.config(state=preview_state)
         self.sweep_stop_btn.config(state=stop_state)
         self.stop_btn.config(state=stop_state)
         self.plot_btn.config(state="normal" if self.logger.rows else "disabled")
@@ -623,6 +764,8 @@ class KeithleyUI:
         row = self.logger.rows[-1]
         row.cycle_id = int(cycle_id)
         row.elapsed_s = None if point_t is None else float(point_t)
+        active_mode = getattr(self, "active_plot_mode", "iv")
+        row.plot_mode = active_mode if active_mode in ("iv", "wrer", "pd") else "iv"
 
     def detect(self):
         self.listbox.delete(0, tk.END)
@@ -701,13 +844,14 @@ class KeithleyUI:
     def measure(self):
         try:
             self._sync_metadata()
+            self.logger.set_run_description("")
             current = self.connection.measure_current()
+            self.active_plot_mode = "iv"
+            self._last_run_mode = "iv"
             self.logger.add(self.last_voltage, current, auto_save=self.autosave_enabled and self.logger.output_file is not None)
             self.row_cycle_ids.append(0)
             self.row_time_s.append(None)
             self._annotate_last_row(cycle_id=0, point_t=None)
-            self.active_plot_mode = "iv"
-            self._last_run_mode = "iv"
             self.status_text.set(f"I={current:.6e} A @ V={self.last_voltage:.6g} V")
             self._refresh_embedded_plot()
             self._update_button_states()
@@ -726,13 +870,14 @@ class KeithleyUI:
             return
         try:
             self._sync_metadata()
+            self.logger.set_run_description("")
             current = self.connection.measure_current()
+            self.active_plot_mode = "iv"
+            self._last_run_mode = "iv"
             self.logger.add(self.last_voltage, current, auto_save=False)
             self.row_cycle_ids.append(0)
             self.row_time_s.append(None)
             self._annotate_last_row(cycle_id=0, point_t=None)
-            self.active_plot_mode = "iv"
-            self._last_run_mode = "iv"
             if len(self.logger.rows) > self.max_live_points:
                 self.logger.rows = self.logger.rows[-self.max_live_points:]
                 self.row_cycle_ids = self.row_cycle_ids[-self.max_live_points:]
@@ -801,6 +946,56 @@ class KeithleyUI:
         times = [i * delay for i in range(len(values))]
         dummy_currents = [0.0] * len(values)
         IVPlotter.show_time_series(times, values, dummy_currents, title="WRER Preview (Voltage Profile)", current_yscale="linear")
+
+    def preview_pd(self):
+        try:
+            gap_delay = float(self.pd_gap_t_entry.get())
+            pot_v = float(self.pd_pot_v_entry.get())
+            pot_t = float(self.pd_pot_t_entry.get())
+            pot_pulses = int(self.pd_pot_pulses_entry.get())
+            read_v = float(self.pd_read_v_entry.get())
+            read_t = float(self.pd_read_t_entry.get())
+            settle_t = float(self.pd_settle_t_entry.get())
+            compliance_uA = float(self.pd_compliance_entry.get())
+            dep_v = float(self.pd_dep_v_entry.get())
+            dep_t = float(self.pd_dep_t_entry.get())
+            dep_pulses = int(self.pd_dep_pulses_entry.get())
+            cycles = int(self.pd_cycles_entry.get())
+        except ValueError:
+            messagebox.showerror("Error", "PD fields must be valid numbers")
+            return
+
+        steps = self._validate_and_build_pd_steps(
+            gap_delay=gap_delay,
+            pot_v=pot_v,
+            pot_t=pot_t,
+            pot_pulses=pot_pulses,
+            read_v=read_v,
+            read_t=read_t,
+            settle_t=settle_t,
+            compliance_uA=compliance_uA,
+            dep_v=dep_v,
+            dep_t=dep_t,
+            dep_pulses=dep_pulses,
+            cycles=cycles,
+            action="Preview",
+        )
+        if not steps:
+            return
+
+        times = [step.get("elapsed_s", float(idx + 1)) for idx, step in enumerate(steps)]
+        voltages = [step["voltage"] for step in steps]
+        if not times:
+            messagebox.showinfo("Preview", "No PD points generated")
+            return
+        dummy_currents = [0.0] * len(times)
+        IVPlotter.show_time_series(
+            times,
+            voltages,
+            dummy_currents,
+            title="PD Preview (Voltage Profile)",
+            current_yscale="linear",
+        )
 
     def run_sweep_from_inputs(self):
         if self.live_running:
@@ -1019,6 +1214,116 @@ class KeithleyUI:
             point_times=point_times,
         )
 
+    def run_pd_from_inputs(self):
+        if self.live_running:
+            messagebox.showerror("Error", "Stop live mode before running a sweep")
+            return
+        if self.sweep_exec_combo.get() != "Host (UI timing)":
+            messagebox.showerror("Error", "PD currently supports Host (UI timing) only")
+            return
+        try:
+            gap_delay = float(self.pd_gap_t_entry.get())
+            pot_v = float(self.pd_pot_v_entry.get())
+            pot_t = float(self.pd_pot_t_entry.get())
+            pot_pulses = int(self.pd_pot_pulses_entry.get())
+            read_v = float(self.pd_read_v_entry.get())
+            read_t = float(self.pd_read_t_entry.get())
+            settle_t = float(self.pd_settle_t_entry.get())
+            compliance_uA = float(self.pd_compliance_entry.get())
+            dep_v = float(self.pd_dep_v_entry.get())
+            dep_t = float(self.pd_dep_t_entry.get())
+            dep_pulses = int(self.pd_dep_pulses_entry.get())
+            cycles = int(self.pd_cycles_entry.get())
+        except ValueError:
+            messagebox.showerror("Error", "PD fields must be valid numbers (pulse counts/cycles must be integer)")
+            return
+
+        steps = self._validate_and_build_pd_steps(
+            gap_delay=gap_delay,
+            pot_v=pot_v,
+            pot_t=pot_t,
+            pot_pulses=pot_pulses,
+            read_v=read_v,
+            read_t=read_t,
+            settle_t=settle_t,
+            compliance_uA=compliance_uA,
+            dep_v=dep_v,
+            dep_t=dep_t,
+            dep_pulses=dep_pulses,
+            cycles=cycles,
+            action="Run",
+        )
+        if not steps:
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            initialdir=self.preferred_save_dir,
+            initialfile=self._pd_output_filename(),
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+            title="Select save file before starting PD run",
+        )
+        if not file_path:
+            return
+
+        try:
+            self._sync_metadata()
+            self.logger.set_run_description(
+                f"{self._pd_graph_title()} | " + self._build_pd_run_description(
+                    pot_v=pot_v,
+                    pot_t=pot_t,
+                    pot_pulses=pot_pulses,
+                    read_v=read_v,
+                    read_t=read_t,
+                    settle_t=settle_t,
+                    compliance_uA=compliance_uA,
+                    dep_v=dep_v,
+                    dep_t=dep_t,
+                    dep_pulses=dep_pulses,
+                    gap_delay=gap_delay,
+                    cycles=cycles,
+                )
+            )
+            self.logger.clear()
+            self.row_cycle_ids = []
+            self.row_time_s = []
+            self.active_plot_mode = "pd"
+            self._last_run_mode = "pd"
+            reset_file = True
+            if os.path.exists(file_path):
+                choice = messagebox.askyesnocancel(
+                    "File Exists",
+                    "Selected file already exists.\n\nYes: Append this run\nNo: Overwrite file\nCancel: Abort run",
+                )
+                if choice is None:
+                    return
+                reset_file = not choice
+            self.logger.set_output_file(file_path, reset_file=reset_file)
+            self.autosave_enabled = True
+            mode_text = "append" if not reset_file else "overwrite/new"
+            self.autosave_text.set(f"Auto-save: ON (each scan point, {mode_text})")
+            self.save_path_text.set(f"Save path: {file_path}")
+            self.preferred_save_dir = os.path.dirname(file_path) or self.preferred_save_dir
+            self.save_dir_text.set(f"Save folder: {self.preferred_save_dir}")
+            self.connection.set_current_compliance_ua(compliance_uA)
+            self._pd_steps = steps
+            self._pd_read_index = 0
+            self.stop_flag = False
+            self.sweep_running = True
+            self._sweep_values = [step["voltage"] for step in steps]
+            self._sweep_index = 0
+            self._sweep_start_time = datetime.now()
+            self.sweep_progress.config(maximum=len(self._pd_steps), value=0)
+            self.progress_text.set(f"Sweep progress: 0/{len(self._pd_steps)}")
+            self.eta_text.set("Elapsed: 00:00 | ETA: --:--")
+            self.status_text.set("PD sequence running")
+            self._update_button_states()
+            self.connection.zero_output()
+            self._run_next_pd_step()
+        except Exception as e:
+            self._finish_sweep()
+            messagebox.showerror("Error", str(e))
+
     def _start_sweep_run(self, values, cycle_ids, delay, sweep_exec, plot_mode="iv", point_times=None):
         file_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
@@ -1039,6 +1344,7 @@ class KeithleyUI:
 
         try:
             self._sync_metadata()
+            self.logger.set_run_description("")
             self.logger.clear()
             self.row_cycle_ids = []
             self.row_time_s = []
@@ -1081,13 +1387,47 @@ class KeithleyUI:
     def _on_sweep_subtab_changed(self, _event=None):
         if not hasattr(self, "sweep_subtabs"):
             return
+        has_pd_compliance = hasattr(self, "pd_compliance_label") and hasattr(self, "pd_compliance_entry")
         current_idx = self.sweep_subtabs.index(self.sweep_subtabs.select())
         if current_idx == 2:
             self.step_label.config(text="Step (V) [unused in WRER]")
             self.sweep_step_entry.config(state="disabled")
+            self.delay_label.grid()
+            self.sweep_delay_entry.grid()
+            if has_pd_compliance:
+                self.pd_compliance_label.grid_remove()
+                self.pd_compliance_entry.grid_remove()
+            for name in ("pd_test_no_label", "pd_test_no_entry", "pd_sample_label", "pd_sample_entry", "pd_electrode_label", "pd_electrode_entry", "pd_electrode_no_label", "pd_electrode_no_entry"):
+                if hasattr(self, name):
+                    getattr(self, name).grid_remove()
+        elif current_idx == 3:
+            self.step_label.grid_remove()
+            self.sweep_step_entry.grid_remove()
+            self.delay_label.grid_remove()
+            self.sweep_delay_entry.grid_remove()
+            if has_pd_compliance:
+                self.pd_compliance_label.grid()
+                self.pd_compliance_entry.grid()
+            for name in ("pd_test_no_label", "pd_test_no_entry", "pd_sample_label", "pd_sample_entry", "pd_electrode_label", "pd_electrode_entry", "pd_electrode_no_label", "pd_electrode_no_entry"):
+                if hasattr(self, name):
+                    getattr(self, name).grid()
         else:
+            self.step_label.grid()
+            self.sweep_step_entry.grid()
+            self.delay_label.grid()
+            self.sweep_delay_entry.grid()
+            if has_pd_compliance:
+                self.pd_compliance_label.grid_remove()
+                self.pd_compliance_entry.grid_remove()
+            for name in ("pd_test_no_label", "pd_test_no_entry", "pd_sample_label", "pd_sample_entry", "pd_electrode_label", "pd_electrode_entry", "pd_electrode_no_label", "pd_electrode_no_entry"):
+                if hasattr(self, name):
+                    getattr(self, name).grid_remove()
             self.step_label.config(text="Step (V)")
             self.sweep_step_entry.config(state="normal")
+        if current_idx != 3:
+            self.step_label.config(text="Step (V)" if current_idx != 2 else "Step (V) [unused in WRER]")
+            if current_idx != 2:
+                self.sweep_step_entry.config(state="normal")
         # Reflect selected sweep mode immediately on the embedded plot view.
         if hasattr(self, "x_axis_scale_combo") and hasattr(self, "y_axis_scale_combo") and hasattr(self, "figure"):
             self._refresh_embedded_plot()
@@ -1172,15 +1512,18 @@ class KeithleyUI:
                 seg = self._build_sweep_values(a, b, signed)
             if not seg:
                 return [], []
-            if idx == 0:
+            # Skip the first point of later segments only when it duplicates the
+            # previous segment's end point. Single-point segments must be kept.
+            if idx == 0 or single[-1] != seg[0]:
                 single.extend(seg)
             else:
                 single.extend(seg[1:])
         values = list(single)
         cycle_ids = [1] * len(single)
         for cycle_idx in range(2, cycles + 1):
-            values.extend(single[1:])
-            cycle_ids.extend([cycle_idx] * (len(single) - 1))
+            repeat_points = single if values[-1] != single[0] else single[1:]
+            values.extend(repeat_points)
+            cycle_ids.extend([cycle_idx] * len(repeat_points))
         return values, cycle_ids
 
     @staticmethod
@@ -1254,6 +1597,283 @@ class KeithleyUI:
                 "Continue?"
             ),
         )
+
+    def _validate_and_build_pd_steps(
+        self,
+        gap_delay: float,
+        pot_v: float,
+        pot_t: float,
+        pot_pulses: int,
+        read_v: float,
+        read_t: float,
+        settle_t: float,
+        compliance_uA: float,
+        dep_v: float,
+        dep_t: float,
+        dep_pulses: int,
+        cycles: int,
+        action: str,
+    ):
+        if cycles < 1:
+            messagebox.showerror("Error", "PD cycles must be >= 1")
+            return None
+        if pot_pulses < 1 or dep_pulses < 1:
+            messagebox.showerror("Error", "Potentiation and depression pulses must both be >= 1")
+            return None
+        if gap_delay < 0:
+            messagebox.showerror("Error", "Common Delay must be >= 0")
+            return None
+        if settle_t < 0:
+            messagebox.showerror("Error", "Stim->Read Delay must be >= 0")
+            return None
+        if min(pot_t, read_t, dep_t) <= 0:
+            messagebox.showerror("Error", "PD pulse/read times must be > 0")
+            return None
+        if min(pot_t, read_t, dep_t) < 0.001:
+            messagebox.showerror("Error", "PD pulse/read times must be at least 0.001 s in Host mode")
+            return None
+        try:
+            self.connection._validate_compliance(compliance_uA)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            return None
+
+        voltages_to_check = [pot_v, read_v, dep_v]
+        if any(abs(v) > self.connection.MAX_ABS_VOLTAGE for v in voltages_to_check):
+            messagebox.showerror(
+                "Error",
+                f"PD voltages must be within +/-{self.connection.MAX_ABS_VOLTAGE:g} V",
+            )
+            return None
+        if max(abs(v) for v in voltages_to_check) > self.SAFE_VOLTAGE_LIMIT:
+            proceed = messagebox.askyesno(
+                "High Voltage Warning",
+                f"PD includes voltage above {self.SAFE_VOLTAGE_LIMIT:g} V.\nContinue {action.lower()}?",
+            )
+            if not proceed:
+                return None
+
+        total_reads = cycles * (pot_pulses + dep_pulses)
+        if not self._confirm_large_wrer_sequence(total_reads * 2, action=action):
+            return None
+
+        return self._build_pd_steps_with_cycles(
+            pot_v=pot_v,
+            pot_t=pot_t,
+            pot_pulses=pot_pulses,
+            read_v=read_v,
+            read_t=read_t,
+            settle_t=settle_t,
+            dep_v=dep_v,
+            dep_t=dep_t,
+            dep_pulses=dep_pulses,
+            gap_delay_s=gap_delay,
+            cycles=cycles,
+        )
+
+    @staticmethod
+    def _build_pd_steps_with_cycles(
+        pot_v: float,
+        pot_t: float,
+        pot_pulses: int,
+        read_v: float,
+        read_t: float,
+        settle_t: float,
+        dep_v: float,
+        dep_t: float,
+        dep_pulses: int,
+        gap_delay_s: float,
+        cycles: int,
+    ):
+        steps = []
+        read_index = 0
+        elapsed_s = 0.0
+        for cycle_idx in range(1, cycles + 1):
+            for _ in range(pot_pulses):
+                elapsed_s += float(pot_t)
+                steps.append(
+                    {
+                        "voltage": round(pot_v, 12),
+                        "hold_s": float(pot_t),
+                        "measure": False,
+                        "post_delay_s": 0.0,
+                        "phase": "pot",
+                        "cycle_id": cycle_idx,
+                        "elapsed_s": elapsed_s,
+                    }
+                )
+                if settle_t > 0:
+                    elapsed_s += float(settle_t)
+                    steps.append(
+                        {
+                            "voltage": 0.0,
+                            "hold_s": float(settle_t),
+                            "measure": False,
+                            "post_delay_s": 0.0,
+                            "phase": "settle",
+                            "cycle_id": cycle_idx,
+                            "elapsed_s": elapsed_s,
+                        }
+                    )
+                read_index += 1
+                elapsed_s += float(read_t)
+                steps.append(
+                    {
+                        "voltage": round(read_v, 12),
+                        "hold_s": float(read_t),
+                        "measure": True,
+                        "post_delay_s": float(gap_delay_s),
+                        "cycle_id": cycle_idx,
+                        "point_t": float(read_index),
+                        "phase": "pot",
+                        "elapsed_s": elapsed_s,
+                    }
+                )
+                elapsed_s += float(gap_delay_s)
+            for _ in range(dep_pulses):
+                elapsed_s += float(dep_t)
+                steps.append(
+                    {
+                        "voltage": round(dep_v, 12),
+                        "hold_s": float(dep_t),
+                        "measure": False,
+                        "post_delay_s": 0.0,
+                        "phase": "dep",
+                        "cycle_id": cycle_idx,
+                        "elapsed_s": elapsed_s,
+                    }
+                )
+                if settle_t > 0:
+                    elapsed_s += float(settle_t)
+                    steps.append(
+                        {
+                            "voltage": 0.0,
+                            "hold_s": float(settle_t),
+                            "measure": False,
+                            "post_delay_s": 0.0,
+                            "phase": "settle",
+                            "cycle_id": cycle_idx,
+                            "elapsed_s": elapsed_s,
+                        }
+                    )
+                read_index += 1
+                elapsed_s += float(read_t)
+                steps.append(
+                    {
+                        "voltage": round(read_v, 12),
+                        "hold_s": float(read_t),
+                        "measure": True,
+                        "post_delay_s": float(gap_delay_s),
+                        "cycle_id": cycle_idx,
+                        "point_t": float(read_index),
+                        "phase": "dep",
+                        "elapsed_s": elapsed_s,
+                    }
+                )
+                elapsed_s += float(gap_delay_s)
+        return steps
+
+    @staticmethod
+    def _build_pd_run_description(
+        pot_v: float,
+        pot_t: float,
+        pot_pulses: int,
+        read_v: float,
+        read_t: float,
+        settle_t: float,
+        compliance_uA: float,
+        dep_v: float,
+        dep_t: float,
+        dep_pulses: int,
+        gap_delay: float,
+        cycles: int,
+    ):
+        return (
+            "PD mode | "
+            f"compliance={compliance_uA:g} uA | "
+            f"pot_v={pot_v:g} V | pot_t={pot_t:g} s | pot_pulses={pot_pulses} | "
+            f"read_v={read_v:g} V | read_t={read_t:g} s | "
+            f"stim_to_read_delay_zero_v={settle_t:g} s | "
+            f"dep_v={dep_v:g} V | dep_t={dep_t:g} s | dep_pulses={dep_pulses} | "
+            f"common_delay_after_read={gap_delay:g} s | cycles={cycles} | "
+            "host_timing_recommended_overhead_addition=+0.005 to +0.010 s per transition"
+        )
+
+    def _run_next_pd_step(self):
+        if self.stop_flag or self._sweep_index >= len(self._pd_steps):
+            if not self.stop_flag:
+                self.status_text.set("Measurement finished. Output zeroed.")
+            self._finish_sweep()
+            return
+
+        step = self._pd_steps[self._sweep_index]
+        try:
+            self.connection.set_voltage(step["voltage"])
+            self.last_voltage = step["voltage"]
+            hold_ms = max(0, int(round(step["hold_s"] * 1000)))
+            if step.get("measure"):
+                self.status_text.set(
+                    f"PD: read {int(step['point_t'])}/{self._count_pd_reads()} at {step['voltage']:.6g} V"
+                )
+                self.sweep_after_id = self.root.after(hold_ms, self._complete_pd_read_step)
+            else:
+                self.status_text.set(
+                    f"PD: pulse step {self._sweep_index + 1}/{len(self._pd_steps)} at {step['voltage']:.6g} V"
+                )
+                self.sweep_after_id = self.root.after(hold_ms, self._complete_pd_pulse_step)
+        except Exception as e:
+            self._finish_sweep()
+            messagebox.showerror("Error", str(e))
+
+    def _complete_pd_pulse_step(self):
+        step = self._pd_steps[self._sweep_index]
+        self.logger.add(step["voltage"], math.nan, auto_save=self.autosave_enabled)
+        self.row_cycle_ids.append(step.get("cycle_id", 0))
+        self.row_time_s.append(step.get("elapsed_s"))
+        self._annotate_last_row(cycle_id=step.get("cycle_id", 0), point_t=step.get("elapsed_s"))
+        self._advance_pd_step()
+
+    def _complete_pd_read_step(self):
+        step = self._pd_steps[self._sweep_index]
+        try:
+            current = self.connection.measure_current()
+            self.logger.add(step["voltage"], current, auto_save=self.autosave_enabled)
+            self.row_cycle_ids.append(step.get("cycle_id", 0))
+            self.row_time_s.append(step.get("elapsed_s"))
+            self._annotate_last_row(cycle_id=step.get("cycle_id", 0), point_t=step.get("elapsed_s"))
+            self.status_text.set(
+                f"PD: read {int(step['point_t'])}/{self._count_pd_reads()} | I={current:.6e} A @ V={step['voltage']:.6g} V"
+            )
+            self._refresh_embedded_plot()
+            self._update_button_states()
+            self._advance_pd_step(post_delay_s=step.get("post_delay_s", 0.0))
+        except Exception as e:
+            self._finish_sweep()
+            messagebox.showerror("Error", str(e))
+
+    def _advance_pd_step(self, post_delay_s=0.0):
+        if post_delay_s > 0:
+            try:
+                self.connection.set_voltage(0.0)
+                self.last_voltage = 0.0
+            except Exception as e:
+                self._finish_sweep()
+                messagebox.showerror("Error", str(e))
+                return
+        self._sweep_index += 1
+        self.sweep_progress.config(value=self._sweep_index)
+        self.progress_text.set(f"Sweep progress: {self._sweep_index}/{len(self._pd_steps)}")
+        self._update_eta()
+        if self.stop_flag or self._sweep_index >= len(self._pd_steps):
+            if not self.stop_flag and self._sweep_index >= len(self._pd_steps):
+                self.status_text.set("Measurement finished. Output zeroed.")
+            self._finish_sweep()
+            return
+        delay_ms = max(0, int(round(post_delay_s * 1000)))
+        self.sweep_after_id = self.root.after(delay_ms, self._run_next_pd_step)
+
+    def _count_pd_reads(self):
+        return sum(1 for step in self._pd_steps if step.get("measure"))
 
     def sweep_example(self, voltages, cycle_ids=None, point_times=None):
         self.stop_flag = False
@@ -1334,6 +1954,8 @@ class KeithleyUI:
 
     def _poll_fast_sweep_result(self):
         self._fast_sweep_poll_after_id = None
+        if getattr(self, "_closing", False):
+            return
         if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
             self._fast_sweep_poll_after_id = self.root.after(100, self._poll_fast_sweep_result)
             return
@@ -1379,6 +2001,9 @@ class KeithleyUI:
         if self.live_after_id:
             self.root.after_cancel(self.live_after_id)
             self.live_after_id = None
+        if self._fast_sweep_poll_after_id:
+            self.root.after_cancel(self._fast_sweep_poll_after_id)
+            self._fast_sweep_poll_after_id = None
         if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
             self.status_text.set("Stop requested. Waiting for instrument fast sweep to finish...")
             self._update_button_states()
@@ -1452,8 +2077,8 @@ class KeithleyUI:
     def load_csv_data(self):
         file_path = filedialog.askopenfilename(
             initialdir=self.preferred_save_dir,
-            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            title="Load Existing Measurement CSV",
+            filetypes=[("Measurement Files", "*.csv *.txt"), ("CSV Files", "*.csv"), ("Text Files", "*.txt"), ("All Files", "*.*")],
+            title="Load Existing Measurement File",
         )
         if not file_path:
             return
@@ -1466,7 +2091,13 @@ class KeithleyUI:
             self.autosave_text.set("Auto-save: OFF (loaded data)")
             self.row_cycle_ids = [getattr(row, "cycle_id", 0) for row in self.logger.rows]
             self.row_time_s = [getattr(row, "elapsed_s", None) for row in self.logger.rows]
-            loaded_mode = "wrer" if any(t is not None for t in self.row_time_s) else "iv"
+            row_modes = [getattr(row, "plot_mode", "iv") for row in self.logger.rows]
+            if any(mode == "pd" for mode in row_modes):
+                loaded_mode = "pd"
+            elif any(mode == "wrer" for mode in row_modes) or any(t is not None for t in self.row_time_s):
+                loaded_mode = "wrer"
+            else:
+                loaded_mode = "iv"
             self.active_plot_mode = loaded_mode
             self._last_run_mode = loaded_mode
             self._refresh_embedded_plot()
@@ -1477,6 +2108,7 @@ class KeithleyUI:
 
     def clear_data(self):
         self.logger.clear()
+        self.logger.set_run_description("")
         self.row_cycle_ids = []
         self.row_time_s = []
         self.active_plot_mode = "iv"
@@ -1490,6 +2122,30 @@ class KeithleyUI:
             messagebox.showinfo("Plot", "No data to plot")
             return
         self._sync_active_plot_mode_from_data()
+        if self.active_plot_mode == "pd":
+            iv, vy, ii, iy = self._build_pd_plot_series()
+            if not iv:
+                messagebox.showinfo("Plot", "No PD time data to plot")
+                return
+            _, yscale = self._get_axis_scales()
+            x_right = max(iv) if iv else 0.0
+            if x_right <= 0:
+                x_right = 1.0
+            IVPlotter.show_time_series(
+                times=iv,
+                voltages=vy,
+                current_times=ii,
+                currents=iy,
+                title=self._current_plot_title(),
+                current_yscale=yscale,
+                xlim=(0.0, x_right),
+                xlabel="Index",
+                current_linestyle="None",
+                current_use_abs=True,
+                current_ylabel="|Current| (A)",
+                voltage_linestyle="None",
+            )
+            return
         if self.active_plot_mode == "wrer":
             tx, vy, iy = self._build_wrer_plot_series()
             if not tx:
@@ -1536,6 +2192,33 @@ class KeithleyUI:
 
     def _refresh_embedded_plot(self):
         self._sync_active_plot_mode_from_data()
+        if self.active_plot_mode == "pd":
+            iv, vy, ii, iy = self._build_pd_plot_series()
+            _, yscale = self._get_axis_scales()
+            self.figure.clear()
+            self.ax = None
+            ax_v = self.figure.add_subplot(211)
+            ax_i = self.figure.add_subplot(212, sharex=ax_v)
+            ax_v.grid(True)
+            ax_i.grid(True)
+            ax_v.plot(iv, vy, linestyle="None", marker="o")
+            if yscale == "log":
+                tx_i, iy_i = IVPlotter.prepare_log_y_data(ii, iy)
+                ax_i.set_yscale("log")
+                ax_i.plot(tx_i, iy_i, linestyle="None", marker="o")
+            else:
+                ax_i.set_yscale("linear")
+                ax_i.plot(ii, [abs(y) for y in iy], linestyle="None", marker="o")
+            ax_v.set_ylabel("Voltage (V)")
+            ax_i.set_ylabel("|Current| (A)")
+            ax_i.set_xlabel("Index")
+            ax_v.set_title(self._current_plot_title())
+            x_right = max(iv) if iv else 0.0
+            if x_right <= 0:
+                x_right = 1.0
+            ax_v.set_xlim(left=0.0, right=x_right)
+            self.canvas.draw_idle()
+            return
         if self.active_plot_mode == "wrer":
             tx, vy, iy = self._build_wrer_plot_series()
             _, yscale = self._get_axis_scales()
@@ -1607,6 +2290,12 @@ class KeithleyUI:
         return xscale, yscale
 
     def _current_plot_title(self):
+        if self.active_plot_mode == "pd":
+            if self.logger.rows:
+                stored_description = (getattr(self.logger.rows[0], "run_description", "") or "").strip()
+                if stored_description:
+                    return stored_description.split(" | ", 1)[0].strip()
+            return self._pd_graph_title()
         if self.logger.output_file:
             return f"I-V Data - {self.logger.output_file.name}"
         return "Live I-V Data"
@@ -1615,6 +2304,11 @@ class KeithleyUI:
         rows_len = len(self.logger.rows)
         if rows_len == 0:
             return self._selected_sweep_plot_mode()
+        row_modes = [getattr(row, "plot_mode", "") for row in self.logger.rows]
+        if any(mode == "pd" for mode in row_modes):
+            return "pd"
+        if any(mode == "wrer" for mode in row_modes):
+            return "wrer"
         times = list(self.row_time_s)
         if len(times) < rows_len:
             times.extend([None] * (rows_len - len(times)))
@@ -1626,15 +2320,33 @@ class KeithleyUI:
         try:
             if hasattr(self, "sweep_subtabs"):
                 current_idx = self.sweep_subtabs.index(self.sweep_subtabs.select())
-                return "wrer" if current_idx == 2 else "iv"
+                if current_idx == 2:
+                    return "wrer"
+                if current_idx == 3:
+                    return "pd"
+                return "iv"
         except Exception:
             pass
-        return self._last_run_mode if self._last_run_mode in ("iv", "wrer") else "iv"
+        return self._last_run_mode if self._last_run_mode in ("iv", "wrer", "pd") else "iv"
 
     def _sync_active_plot_mode_from_data(self):
         inferred = self._infer_plot_mode_from_data()
-        if inferred in ("iv", "wrer"):
+        if inferred in ("iv", "wrer", "pd"):
             self.active_plot_mode = inferred
+
+    def _build_pd_plot_series(self):
+        iv = []
+        vy = []
+        ii = []
+        iy = []
+        for idx, row in enumerate(self.logger.rows):
+            x_value = float(idx + 1)
+            iv.append(x_value)
+            vy.append(row.voltage)
+            if isinstance(row.current, (int, float)) and math.isfinite(row.current):
+                ii.append(x_value)
+                iy.append(row.current)
+        return iv, vy, ii, iy
 
     def _build_cycle_series(self, xscale, yscale):
         cycle_ids = list(self.row_cycle_ids)
@@ -1680,11 +2392,47 @@ class KeithleyUI:
         return tx, vy, iy
 
     def _sync_metadata(self):
+        pd_sample = ""
+        if self._selected_sweep_plot_mode() == "pd" and hasattr(self, "pd_sample_entry"):
+            pd_sample = self.pd_sample_entry.get().strip()
+        if pd_sample:
+            self.sample_entry.delete(0, tk.END)
+            self.sample_entry.insert(0, pd_sample)
         self.logger.set_metadata(
             sample_name=self.sample_entry.get(),
             operator=self.operator_entry.get(),
             notes=self.notes_entry.get(),
         )
+
+    def _pd_graph_title(self):
+        test_no = self.pd_test_no_entry.get().strip() if hasattr(self, "pd_test_no_entry") else ""
+        sample_name = self.pd_sample_entry.get().strip() if hasattr(self, "pd_sample_entry") else self.sample_entry.get().strip()
+        electrode_sign = self.pd_electrode_entry.get().strip() if hasattr(self, "pd_electrode_entry") else ""
+        electrode_no = self.pd_electrode_no_entry.get().strip() if hasattr(self, "pd_electrode_no_entry") else ""
+        pot_v = self.pd_pot_v_entry.get().strip() if hasattr(self, "pd_pot_v_entry") else ""
+        dep_v = self.pd_dep_v_entry.get().strip() if hasattr(self, "pd_dep_v_entry") else ""
+        read_v = self.pd_read_v_entry.get().strip() if hasattr(self, "pd_read_v_entry") else ""
+        date_text = datetime.now().strftime("%Y%m%d")
+        parts = [
+            f"Test{test_no or '00'}",
+            "I-V data",
+            "PD",
+            f"P({pot_v or '?'} V)",
+            f"D({dep_v or '?'} V)",
+            f"R({read_v or '?'} V)",
+        ]
+        if sample_name:
+            parts.append(sample_name)
+        if electrode_sign:
+            parts.append(electrode_sign)
+        if electrode_no:
+            parts.append(electrode_no)
+        parts.append(date_text)
+        return "_".join(parts)
+
+    def _pd_output_filename(self):
+        name = re.sub(r'[<>:"/\\|?*\s]+', "_", self._pd_graph_title()).strip("._")
+        return f"{name or 'pd_run'}.txt"
 
     def _update_eta(self):
         if not self._sweep_start_time or self._sweep_index == 0:
@@ -1717,8 +2465,12 @@ class KeithleyUI:
         self.sweep_step_entry.insert(0, step)
 
     def on_close(self):
+        self._closing = True
         self._save_ui_settings()
         self.stop()
+        if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
+            self.root.destroy()
+            return
         self.connection.close()
         self.root.destroy()
 

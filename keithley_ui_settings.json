@@ -1,15 +1,20 @@
 {
   "voltage": "0",
-  "compliance_ua": "10",
+  "compliance_ua": "100",
   "sweep_start_v": "0",
   "sweep_stop_v": "1",
-  "sweep_step_v": "0.1",
-  "sweep_delay_s": "0.1",
+  "sweep_step_v": "1",
+  "sweep_delay_s": "1",
+  "pd_compliance_ua": "1",
+  "pd_test_no": "04",
+  "pd_sample_name": "pC6DTP",
+  "pd_electrode_sign": "ITO",
+  "pd_electrode_no": "D7",
   "cycle_peak_v": "1",
   "sweep_cycles": "1",
   "seq_start_v": "0",
-  "seq_end_v": "1",
-  "seq_cycles": "1",
+  "seq_end_v": "0",
+  "seq_cycles": "5",
   "wrer_write_v": "5",
   "wrer_write_t": "2",
   "wrer_read_v": "0.5",
@@ -17,7 +22,18 @@
   "wrer_erase_v": "-1",
   "wrer_erase_t": "2",
   "wrer_cycles": "5",
-  "sample_name": "",
+  "pd_pot_v": "1",
+  "pd_pot_t": "0.01",
+  "pd_pot_pulses": "50",
+  "pd_read_v": "0.1",
+  "pd_read_t": "0.01",
+  "pd_settle_t": "0.01",
+  "pd_gap_t": "0.01",
+  "pd_dep_v": "-1",
+  "pd_dep_t": "0.01",
+  "pd_dep_pulses": "50",
+  "pd_cycles": "5",
+  "sample_name": "pC6DTP",
   "operator": "",
   "notes": "",
   "sample_rate_ms": "500",
@@ -27,11 +43,24 @@
   "fast_limit": "1 ms",
   "x_axis_scale": "Linear",
   "y_axis_scale": "Linear",
-  "active_plot_mode": "wrer",
-  "last_run_mode": "iv",
-  "custom_segments": [],
-  "sweep_tab_index": 2,
+  "active_plot_mode": "pd",
+  "last_run_mode": "pd",
+  "custom_segments": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0
+    ]
+  ],
+  "sweep_tab_index": 3,
   "main_tab_index": 2,
   "preferred_save_dir": "C:/Users/thottappali/Documents/test kethly",
-  "window_geometry": "1920x1009+-8+-8"
+  "window_geometry": "1920x1009+-1928+-8"
 }
