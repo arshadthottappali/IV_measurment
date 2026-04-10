@@ -39,6 +39,50 @@ class KeithleyConnection:
             logger.exception("Failed to list VISA resources")
             raise
 
+    def diagnose_prerequisites(self):
+        report = {
+            "ok": True,
+            "visa_ready": False,
+            "resources": [],
+            "gpib_resources": [],
+            "issues": [],
+            "downloads": [
+                "NI-VISA Runtime (required): https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html",
+                "NI-488.2 driver (required for NI GPIB adapters): https://www.ni.com/en/support/downloads/drivers/download.ni-488-2.html",
+                (
+                    "Keithley KUSB-488A legacy driver (if using KUSB-488A adapter): "
+                    "https://www.tek.com/en/support/software/driver/9-2-0"
+                ),
+                "NI MAX info (optional diagnostics): https://www.ni.com/en-us/support/documentation/supplemental/21/what-is-ni-measurement---automation-explorer--ni-max--.html",
+            ],
+        }
+        try:
+            self.initialize()
+            report["visa_ready"] = True
+        except Exception as e:
+            report["ok"] = False
+            report["issues"].append(f"VISA runtime initialization failed: {e}")
+            return report
+
+        try:
+            resources = list(self.rm.list_resources())
+            report["resources"] = resources
+            report["gpib_resources"] = [r for r in resources if str(r).upper().startswith("GPIB")]
+        except Exception as e:
+            report["ok"] = False
+            report["issues"].append(f"VISA resource enumeration failed: {e}")
+            return report
+
+        if not report["resources"]:
+            report["issues"].append(
+                "No VISA resources detected. Instrument/adapter may be disconnected or driver may be missing."
+            )
+        if not report["gpib_resources"]:
+            report["issues"].append(
+                "No GPIB resources detected. If you use GPIB, install NI-488.2 or Keithley KUSB-488A driver."
+            )
+        return report
+
     def connect(self, resource_name: str):
         self.initialize()
         logger.info("Connecting to resource: %s", resource_name)

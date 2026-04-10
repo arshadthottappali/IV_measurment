@@ -75,6 +75,7 @@ class KeithleyUI:
         self._load_ui_settings()
         self._update_button_states()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.after(250, self._run_startup_prereq_check)
 
     def _build_ui(self):
         style = ttk.Style()
@@ -153,15 +154,17 @@ class KeithleyUI:
         frame = ttk.LabelFrame(parent, text="Connection", padding=8)
         frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
 
         self.listbox = tk.Listbox(frame, width=44, height=4)
-        self.listbox.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self.listbox.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
 
         ttk.Button(frame, text="Detect Devices", command=self.detect).grid(row=1, column=0, sticky="ew", padx=(0, 4))
         self.connect_btn = ttk.Button(frame, text="Connect", command=self.connect)
-        self.connect_btn.grid(row=1, column=1, sticky="ew")
+        self.connect_btn.grid(row=1, column=1, sticky="ew", padx=(0, 4))
+        ttk.Button(frame, text="Prereq Check", command=self.show_prereq_check).grid(row=1, column=2, sticky="ew")
         ttk.Label(frame, textvariable=self.instrument_info_text, wraplength=360).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(6, 0)
+            row=2, column=0, columnspan=3, sticky="w", pady=(6, 0)
         )
 
     def _build_manual_frame(self, parent):
@@ -791,6 +794,47 @@ class KeithleyUI:
                 messagebox.showinfo("Detect", "No VISA devices found")
         except Exception as e:
             messagebox.showerror("Error", str(e))
+
+    def _run_startup_prereq_check(self):
+        self.show_prereq_check(silent_if_ok=True)
+
+    def _format_prereq_report(self, report):
+        lines = []
+        if report["visa_ready"]:
+            lines.append("VISA runtime: OK")
+        else:
+            lines.append("VISA runtime: NOT READY")
+
+        resources = report.get("resources", [])
+        gpib_resources = report.get("gpib_resources", [])
+        lines.append(f"Detected VISA resources: {len(resources)}")
+        lines.append(f"Detected GPIB resources: {len(gpib_resources)}")
+        if resources:
+            preview = resources[:6]
+            lines.append("Resources:")
+            for item in preview:
+                lines.append(f"- {item}")
+            if len(resources) > len(preview):
+                lines.append(f"- ... and {len(resources) - len(preview)} more")
+        if report.get("issues"):
+            lines.append("")
+            lines.append("Issues:")
+            for issue in report["issues"]:
+                lines.append(f"- {issue}")
+        lines.append("")
+        lines.append("Required downloads/drivers:")
+        for item in report["downloads"]:
+            lines.append(f"- {item}")
+        return "\n".join(lines)
+
+    def show_prereq_check(self, silent_if_ok=False):
+        report = self.connection.diagnose_prerequisites()
+        details = self._format_prereq_report(report)
+        if report["ok"] and not report.get("issues"):
+            if not silent_if_ok:
+                messagebox.showinfo("Prerequisite Check", details)
+            return
+        messagebox.showwarning("Prerequisite Check", details)
 
     def connect(self):
         selection = self.listbox.curselection()
