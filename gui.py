@@ -550,7 +550,16 @@ class KeithleyUI:
         self.clear_data_btn.grid(row=8, column=1, sticky="ew", pady=(6, 0))
 
     def _settings_path(self):
-        return Path(self.SETTINGS_FILE)
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            settings_dir = Path(appdata) / "KeithleyIV"
+        else:
+            settings_dir = Path.home() / ".keithley_iv"
+        try:
+            settings_dir.mkdir(parents=True, exist_ok=True)
+            return settings_dir / self.SETTINGS_FILE
+        except Exception:
+            return Path(self.SETTINGS_FILE)
 
     def _set_entry_value(self, entry, value):
         entry.delete(0, tk.END)
@@ -563,6 +572,10 @@ class KeithleyUI:
 
     def _load_ui_settings(self):
         path = self._settings_path()
+        if not path.exists():
+            legacy_path = Path(self.SETTINGS_FILE)
+            if legacy_path.exists():
+                path = legacy_path
         if not path.exists():
             return
         try:
