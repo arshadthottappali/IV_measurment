@@ -56,6 +56,7 @@ class KeithleyUI:
         self._fast_sweep_result = None
         self._fast_sweep_error = None
         self._fast_sweep_poll_after_id = None
+        self._close_wait_after_id = None
         self._closing = False
 
         self.status_text = tk.StringVar(value="Disconnected")
@@ -2001,13 +2002,16 @@ class KeithleyUI:
         if self.live_after_id:
             self.root.after_cancel(self.live_after_id)
             self.live_after_id = None
-        if self._fast_sweep_poll_after_id:
-            self.root.after_cancel(self._fast_sweep_poll_after_id)
-            self._fast_sweep_poll_after_id = None
-        if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
+        fast_thread_alive = self._fast_sweep_thread and self._fast_sweep_thread.is_alive()
+        if fast_thread_alive:
+            if not self._fast_sweep_poll_after_id:
+                self._fast_sweep_poll_after_id = self.root.after(100, self._poll_fast_sweep_result)
             self.status_text.set("Stop requested. Waiting for instrument fast sweep to finish...")
             self._update_button_states()
             return
+        if self._fast_sweep_poll_after_id:
+            self.root.after_cancel(self._fast_sweep_poll_after_id)
+            self._fast_sweep_poll_after_id = None
         self._finish_sweep(reset_progress=False)
         try:
             self.connection.zero_output()
@@ -2469,8 +2473,17 @@ class KeithleyUI:
         self._save_ui_settings()
         self.stop()
         if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
-            self.root.destroy()
+            self.status_text.set("Closing after fast sweep completes...")
+            self._wait_for_fast_sweep_then_close()
             return
+        self.connection.close()
+        self.root.destroy()
+
+    def _wait_for_fast_sweep_then_close(self):
+        if self._fast_sweep_thread and self._fast_sweep_thread.is_alive():
+            self._close_wait_after_id = self.root.after(100, self._wait_for_fast_sweep_then_close)
+            return
+        self._close_wait_after_id = None
         self.connection.close()
         self.root.destroy()
 

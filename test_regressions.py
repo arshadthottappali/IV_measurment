@@ -77,9 +77,17 @@ class _DummyRoot:
     def __init__(self):
         self.cancelled = []
         self.destroyed = False
+        self.after_calls = []
+        self._next_token = 0
 
     def after_cancel(self, token):
         self.cancelled.append(token)
+
+    def after(self, delay_ms, callback):
+        token = f"after-{self._next_token}"
+        self._next_token += 1
+        self.after_calls.append((token, delay_ms, callback))
+        return token
 
     def destroy(self):
         self.destroyed = True
@@ -292,8 +300,8 @@ class KeithleyUIRegressions(unittest.TestCase):
         self.assertTrue(ui.stop_flag)
         self.assertFalse(ui.live_running)
         self.assertIn("Stop requested", ui.status_text.get())
-        self.assertIn("poll-1", ui.root.cancelled)
-        self.assertIsNone(ui._fast_sweep_poll_after_id)
+        self.assertEqual(ui.root.cancelled, [])
+        self.assertEqual(ui._fast_sweep_poll_after_id, "poll-1")
 
     def test_pd_txt_round_trip_and_append_numbering(self):
         path = Path("pd_test_round_trip_tmp.txt")
@@ -399,11 +407,12 @@ class KeithleyUIRegressions(unittest.TestCase):
         self.assertEqual(captured["title"], "Load Existing Measurement File")
         self.assertIn(("Measurement Files", "*.csv *.txt"), captured["filetypes"])
 
-    def test_on_close_skips_connection_close_while_fast_thread_alive(self):
+    def test_on_close_defers_connection_close_while_fast_thread_alive(self):
         ui = KeithleyUI.__new__(KeithleyUI)
         ui.root = _DummyRoot()
         ui._fast_sweep_thread = _DummyThread(alive=True)
         ui._fast_sweep_poll_after_id = None
+        ui.status_text = _DummyTextVar()
         ui._save_ui_settings = lambda: None
         ui.stop = lambda: None
         close_called = {"value": False}
@@ -412,8 +421,16 @@ class KeithleyUIRegressions(unittest.TestCase):
         ui.on_close()
 
         self.assertTrue(ui._closing)
-        self.assertTrue(ui.root.destroyed)
+        self.assertFalse(ui.root.destroyed)
         self.assertFalse(close_called["value"])
+        self.assertEqual(len(ui.root.after_calls), 1)
+        token, _delay_ms, callback = ui.root.after_calls[0]
+        self.assertEqual(ui._close_wait_after_id, token)
+
+        ui._fast_sweep_thread = _DummyThread(alive=False)
+        callback()
+        self.assertTrue(close_called["value"])
+        self.assertTrue(ui.root.destroyed)
 
 
 if __name__ == "__main__":
