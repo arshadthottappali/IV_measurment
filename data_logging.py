@@ -172,8 +172,7 @@ class DataLogger:
                 return
             pulse_no = self._pd_text_existing_count + sum(
                 1 for item in self.rows
-                if item.plot_mode == "pd"
-                and isinstance(item.current, (int, float))
+                if isinstance(item.current, (int, float))
                 and math.isfinite(item.current)
             )
             with self.output_file.open("a", encoding="utf-8") as f:

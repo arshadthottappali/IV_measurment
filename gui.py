@@ -1276,8 +1276,13 @@ class KeithleyUI:
         if self.live_running:
             messagebox.showerror("Error", "Stop live mode before running a sweep")
             return
-        if self.sweep_exec_combo.get() != "Host (UI timing)":
-            messagebox.showerror("Error", "PD currently supports Host (UI timing) only")
+        sweep_exec = self.sweep_exec_combo.get()
+        host_timing = sweep_exec == "Host (UI timing)"
+        if not host_timing and self.connection.mode != "tsp2600":
+            messagebox.showerror(
+                "Error",
+                "Fast TSP PD execution is available only when connected to Keithley 2600 in TSP mode.",
+            )
             return
         try:
             gap_delay = float(self.pd_gap_t_entry.get())
@@ -1310,6 +1315,7 @@ class KeithleyUI:
             dep_pulses=dep_pulses,
             cycles=cycles,
             action="Run",
+            host_timing=host_timing,
         )
         if not steps:
             return
@@ -1364,20 +1370,38 @@ class KeithleyUI:
             self.preferred_save_dir = os.path.dirname(file_path) or self.preferred_save_dir
             self.save_dir_text.set(f"Save folder: {self.preferred_save_dir}")
             self.connection.set_current_compliance_ua(compliance_uA)
-            self._pd_steps = steps
-            self._pd_read_index = 0
-            self.stop_flag = False
-            self.sweep_running = True
-            self._sweep_values = [step["voltage"] for step in steps]
-            self._sweep_index = 0
-            self._sweep_start_time = datetime.now()
-            self.sweep_progress.config(maximum=len(self._pd_steps), value=0)
-            self.progress_text.set(f"Sweep progress: 0/{len(self._pd_steps)}")
-            self.eta_text.set("Elapsed: 00:00 | ETA: --:--")
-            self.status_text.set("PD sequence running")
-            self._update_button_states()
             self.connection.zero_output()
-            self._run_next_pd_step()
+            if host_timing:
+                self._pd_steps = steps
+                self._pd_read_index = 0
+                self.stop_flag = False
+                self.sweep_running = True
+                self._sweep_values = [step["voltage"] for step in steps]
+                self._sweep_index = 0
+                self._sweep_start_time = datetime.now()
+                self.sweep_progress.config(maximum=len(self._pd_steps), value=0)
+                self.progress_text.set(f"Sweep progress: 0/{len(self._pd_steps)}")
+                self.eta_text.set("Elapsed: 00:00 | ETA: --:--")
+                self.status_text.set("PD sequence running")
+                self._update_button_states()
+                self._run_next_pd_step()
+            else:
+                self._run_fast_pd_sequence(
+                    {
+                        "pot_v": pot_v,
+                        "pot_t": pot_t,
+                        "pot_pulses": pot_pulses,
+                        "read_v": read_v,
+                        "read_t": read_t,
+                        "settle_t": settle_t,
+                        "dep_v": dep_v,
+                        "dep_t": dep_t,
+                        "dep_pulses": dep_pulses,
+                        "gap_delay_s": gap_delay,
+                        "cycles": cycles,
+                    },
+                    total_reads=cycles * (pot_pulses + dep_pulses),
+                )
         except Exception as e:
             self._finish_sweep()
             messagebox.showerror("Error", str(e))
@@ -1671,6 +1695,7 @@ class KeithleyUI:
         dep_pulses: int,
         cycles: int,
         action: str,
+        host_timing: bool = True,
     ):
         if cycles < 1:
             messagebox.showerror("Error", "PD cycles must be >= 1")
@@ -1687,7 +1712,7 @@ class KeithleyUI:
         if min(pot_t, read_t, dep_t) <= 0:
             messagebox.showerror("Error", "PD pulse/read times must be > 0")
             return None
-        if min(pot_t, read_t, dep_t) < 0.001:
+        if host_timing and min(pot_t, read_t, dep_t) < 0.001:
             messagebox.showerror("Error", "PD pulse/read times must be at least 0.001 s in Host mode")
             return None
         try:
@@ -1996,9 +2021,35 @@ class KeithleyUI:
         self.root.update_idletasks()
         self._fast_sweep_result = None
         self._fast_sweep_error = None
+        self._fast_sweep_kind = "iv"
         self._fast_sweep_thread = threading.Thread(
             target=self._fast_sweep_worker,
             args=(list(voltages), delay_s),
+            daemon=True,
+        )
+        self._fast_sweep_thread.start()
+        self._fast_sweep_poll_after_id = self.root.after(100, self._poll_fast_sweep_result)
+
+    def _run_fast_pd_sequence(self, pd_params, total_reads):
+        self.stop_flag = False
+        self.sweep_running = True
+        self._sweep_values = [pd_params.get("read_v", 0.0)] * max(0, int(total_reads))
+        self._sweep_cycle_ids = []
+        self._sweep_point_times = []
+        self._sweep_index = 0
+        self._sweep_start_time = datetime.now()
+        self.sweep_progress.config(maximum=len(self._sweep_values), value=0)
+        self.progress_text.set(f"Sweep progress: 0/{len(self._sweep_values)}")
+        self.eta_text.set("Elapsed: 00:00 | ETA: --:--")
+        self.status_text.set("Fast TSP PD running on instrument...")
+        self._update_button_states()
+        self.root.update_idletasks()
+        self._fast_sweep_result = None
+        self._fast_sweep_error = None
+        self._fast_sweep_kind = "pd"
+        self._fast_sweep_thread = threading.Thread(
+            target=self._fast_pd_worker,
+            args=(dict(pd_params),),
             daemon=True,
         )
         self._fast_sweep_thread.start()
@@ -2010,6 +2061,12 @@ class KeithleyUI:
         except Exception as e:
             self._fast_sweep_error = e
 
+    def _fast_pd_worker(self, pd_params):
+        try:
+            self._fast_sweep_result = self.connection.run_tsp_pd_sequence(**pd_params)
+        except Exception as e:
+            self._fast_sweep_error = e
+
     def _poll_fast_sweep_result(self):
         self._fast_sweep_poll_after_id = None
         if getattr(self, "_closing", False):
@@ -2018,35 +2075,54 @@ class KeithleyUI:
             self._fast_sweep_poll_after_id = self.root.after(100, self._poll_fast_sweep_result)
             return
 
-        pairs = self._fast_sweep_result or []
+        result = self._fast_sweep_result or []
         error = self._fast_sweep_error
+        kind = getattr(self, "_fast_sweep_kind", "iv")
         self._fast_sweep_thread = None
         self._fast_sweep_result = None
         self._fast_sweep_error = None
+        self._fast_sweep_kind = None
 
         try:
             if error is not None:
                 messagebox.showerror("Error", str(error))
                 return
             if self.stop_flag:
-                self.status_text.set("Fast sweep stopped after instrument run completed")
+                self.status_text.set("Fast instrument run stopped after completion")
                 return
-            total = len(pairs)
-            for idx, (v, i) in enumerate(pairs, start=1):
-                self.last_voltage = v
-                self._sync_metadata()
-                self.logger.add(v, i, auto_save=self.autosave_enabled)
-                cycle_id = self._sweep_cycle_ids[idx - 1] if idx - 1 < len(self._sweep_cycle_ids) else 0
-                self.row_cycle_ids.append(cycle_id)
-                point_t = self._sweep_point_times[idx - 1] if idx - 1 < len(self._sweep_point_times) else None
-                self.row_time_s.append(point_t)
-                self._annotate_last_row(cycle_id=cycle_id, point_t=point_t)
-                self._sweep_index = idx
-                self.sweep_progress.config(value=idx)
-                self.progress_text.set(f"Sweep progress: {idx}/{total}")
+            total = len(result)
+            if kind == "pd":
+                for idx, row in enumerate(result, start=1):
+                    v = row.get("voltage", 0.0)
+                    i = row.get("current", math.nan)
+                    cycle_id = row.get("cycle_id", 0)
+                    point_t = row.get("elapsed_s")
+                    self.last_voltage = v
+                    self._sync_metadata()
+                    self.logger.add(v, i, auto_save=self.autosave_enabled)
+                    self.row_cycle_ids.append(cycle_id)
+                    self.row_time_s.append(point_t)
+                    self._annotate_last_row(cycle_id=cycle_id, point_t=point_t)
+                    self._sweep_index = idx
+                    self.sweep_progress.config(value=idx)
+                    self.progress_text.set(f"Sweep progress: {idx}/{total}")
+                self.status_text.set(f"Fast PD complete: {self._sweep_index} read points")
+            else:
+                for idx, (v, i) in enumerate(result, start=1):
+                    self.last_voltage = v
+                    self._sync_metadata()
+                    self.logger.add(v, i, auto_save=self.autosave_enabled)
+                    cycle_id = self._sweep_cycle_ids[idx - 1] if idx - 1 < len(self._sweep_cycle_ids) else 0
+                    self.row_cycle_ids.append(cycle_id)
+                    point_t = self._sweep_point_times[idx - 1] if idx - 1 < len(self._sweep_point_times) else None
+                    self.row_time_s.append(point_t)
+                    self._annotate_last_row(cycle_id=cycle_id, point_t=point_t)
+                    self._sweep_index = idx
+                    self.sweep_progress.config(value=idx)
+                    self.progress_text.set(f"Sweep progress: {idx}/{total}")
+                self.status_text.set(f"Fast sweep complete: {self._sweep_index} points")
             self._refresh_embedded_plot()
             self._update_eta()
-            self.status_text.set(f"Fast sweep complete: {self._sweep_index} points")
         finally:
             self._finish_sweep()
 
@@ -2063,7 +2139,7 @@ class KeithleyUI:
         if fast_thread_alive:
             if not self._fast_sweep_poll_after_id:
                 self._fast_sweep_poll_after_id = self.root.after(100, self._poll_fast_sweep_result)
-            self.status_text.set("Stop requested. Waiting for instrument fast sweep to finish...")
+            self.status_text.set("Stop requested. Waiting for instrument run to finish...")
             self._update_button_states()
             return
         if self._fast_sweep_poll_after_id:

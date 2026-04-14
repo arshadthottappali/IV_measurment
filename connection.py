@@ -234,6 +234,152 @@ class KeithleyConnection:
             except Exception:
                 logger.exception("Failed restoring VISA timeout after fast sweep")
 
+    def run_tsp_pd_sequence(
+        self,
+        *,
+        pot_v: float,
+        pot_t: float,
+        pot_pulses: int,
+        read_v: float,
+        read_t: float,
+        settle_t: float,
+        dep_v: float,
+        dep_t: float,
+        dep_pulses: int,
+        gap_delay_s: float,
+        cycles: int,
+    ):
+        self._require_connection()
+        if self.mode != "tsp2600":
+            raise RuntimeError("Fast PD execution is available only for Keithley 2600 TSP mode")
+        if cycles < 1:
+            raise RuntimeError("PD cycles must be >= 1")
+        if pot_pulses < 1 or dep_pulses < 1:
+            raise RuntimeError("Potentiation and depression pulses must both be >= 1")
+        if min(pot_t, read_t, dep_t) <= 0:
+            raise RuntimeError("PD pulse/read times must be > 0")
+        if settle_t < 0 or gap_delay_s < 0:
+            raise RuntimeError("PD settle/gap delays must be >= 0")
+
+        for voltage in (pot_v, read_v, dep_v):
+            self._validate_voltage(voltage)
+
+        original_timeout = getattr(self.inst, "timeout", 5000)
+        total_steps = cycles * (pot_pulses + dep_pulses)
+        estimated_sweep_s = cycles * (
+            pot_pulses * (pot_t + settle_t + read_t + gap_delay_s)
+            + dep_pulses * (dep_t + settle_t + read_t + gap_delay_s)
+        )
+        timeout_ms = max(20_000, int(estimated_sweep_s * 1000 * 8))
+        self.inst.timeout = max(original_timeout, timeout_ms)
+        logger.info(
+            "Fast TSP PD timeout set to %d ms (original %d ms, reads=%d, estimated %.3f s)",
+            self.inst.timeout,
+            original_timeout,
+            total_steps,
+            estimated_sweep_s,
+        )
+        try:
+            cmd = (
+                f"local pot_v={float(pot_v):.12g}; "
+                f"local pot_t={float(pot_t):.9g}; "
+                f"local pot_n={int(pot_pulses)}; "
+                f"local read_v={float(read_v):.12g}; "
+                f"local read_t={float(read_t):.9g}; "
+                f"local settle_t={float(settle_t):.9g}; "
+                f"local dep_v={float(dep_v):.12g}; "
+                f"local dep_t={float(dep_t):.9g}; "
+                f"local dep_n={int(dep_pulses)}; "
+                f"local gap_t={float(gap_delay_s):.9g}; "
+                f"local cycles={int(cycles)}; "
+                f"local elapsed=0; "
+                f"local pulse_no=0; "
+                f"local out=''; "
+                f"{self.channel}.source.output = {self.channel}.OUTPUT_ON; "
+                f"for cyc=1,cycles do "
+                f"for n=1,pot_n do "
+                f"{self.channel}.source.levelv=pot_v; "
+                f"delay(pot_t); "
+                f"elapsed=elapsed+pot_t; "
+                f"if settle_t > 0 then "
+                f"{self.channel}.source.levelv=0; "
+                f"delay(settle_t); "
+                f"elapsed=elapsed+settle_t; "
+                f"end; "
+                f"{self.channel}.source.levelv=read_v; "
+                f"delay(read_t); "
+                f"elapsed=elapsed+read_t; "
+                f"pulse_no=pulse_no+1; "
+                f"local i={self.channel}.measure.i(); "
+                f"out=out..string.format('%d,%.12g,%.12e,%d,%.12g,pot;', pulse_no, read_v, i, cyc, elapsed); "
+                f"if gap_t > 0 then "
+                f"{self.channel}.source.levelv=0; "
+                f"delay(gap_t); "
+                f"elapsed=elapsed+gap_t; "
+                f"end; "
+                f"end; "
+                f"for n=1,dep_n do "
+                f"{self.channel}.source.levelv=dep_v; "
+                f"delay(dep_t); "
+                f"elapsed=elapsed+dep_t; "
+                f"if settle_t > 0 then "
+                f"{self.channel}.source.levelv=0; "
+                f"delay(settle_t); "
+                f"elapsed=elapsed+settle_t; "
+                f"end; "
+                f"{self.channel}.source.levelv=read_v; "
+                f"delay(read_t); "
+                f"elapsed=elapsed+read_t; "
+                f"pulse_no=pulse_no+1; "
+                f"local i={self.channel}.measure.i(); "
+                f"out=out..string.format('%d,%.12g,%.12e,%d,%.12g,dep;', pulse_no, read_v, i, cyc, elapsed); "
+                f"if gap_t > 0 then "
+                f"{self.channel}.source.levelv=0; "
+                f"delay(gap_t); "
+                f"elapsed=elapsed+gap_t; "
+                f"end; "
+                f"end; "
+                f"end; "
+                f"{self.channel}.source.levelv = 0; "
+                f"{self.channel}.source.output = {self.channel}.OUTPUT_OFF; "
+                f"print(out)"
+            )
+            raw = self._query(cmd).strip()
+            rows = []
+            for item in (part for part in raw.split(";") if part):
+                try:
+                    pulse_no_s, voltage_s, current_s, cycle_s, elapsed_s, phase = item.split(",", 5)
+                    rows.append(
+                        {
+                            "pulse_no": int(float(pulse_no_s)),
+                            "voltage": float(voltage_s),
+                            "current": float(current_s),
+                            "cycle_id": int(float(cycle_s)),
+                            "elapsed_s": float(elapsed_s),
+                            "phase": phase.strip(),
+                        }
+                    )
+                except Exception:
+                    continue
+            if not rows:
+                raise RuntimeError("Instrument fast PD run returned no parseable data")
+            self.output_enabled = False
+            self._check_instrument_errors()
+            return rows
+        except Exception:
+            logger.exception("Fast TSP PD sequence failed")
+            try:
+                self.zero_output()
+            except Exception:
+                logger.exception("Failed to zero output after fast PD failure")
+            raise
+        finally:
+            try:
+                self.inst.timeout = original_timeout
+                logger.info("Fast TSP PD timeout restored to %d ms", original_timeout)
+            except Exception:
+                logger.exception("Failed restoring VISA timeout after fast PD run")
+
     def enable_output(self):
         self._require_connection()
         try:
