@@ -75,7 +75,7 @@ class KeithleyUI:
         self._load_ui_settings()
         self._update_button_states()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.after(250, self._run_startup_prereq_check)
+        # self.root.after(250, self._run_startup_prereq_check)
 
     def _build_ui(self):
         style = ttk.Style()

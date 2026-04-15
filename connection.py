@@ -200,17 +200,20 @@ class KeithleyConnection:
             self.enable_output()
             points = ",".join(f"{float(v):.12g}" for v in voltages)
             # Execute full loop on instrument to avoid host-side timing jitter.
-            cmd = (
-                f"local pts={{ {points} }}; "
-                f"local out=''; "
-                f"for idx,v in ipairs(pts) do "
-                f"{self.channel}.source.levelv=v; "
-                f"delay({delay_s:.9g}); "
-                f"local i={self.channel}.measure.i(); "
-                f"out=out..string.format('%.12g,%.12e;', v, i); "
-                f"end; "
-                f"print(out)"
-            )
+            script = [
+                "loadandrunscript",
+                f"local pts={{ {points} }}",
+                "local out=''",
+                "for idx,v in ipairs(pts) do",
+                f"{self.channel}.source.levelv=v",
+                f"delay({delay_s:.9g})",
+                f"local i={self.channel}.measure.i()",
+                "out=out..string.format('%.12g,%.12e;', v, i)",
+                "end",
+                "print(out)",
+                "endscript",
+            ]
+            cmd = "\n".join(script)
             raw = self._query(cmd).strip()
             pairs = [p for p in raw.split(";") if p]
             result = []
@@ -280,70 +283,76 @@ class KeithleyConnection:
             estimated_sweep_s,
         )
         try:
-            cmd = (
-                f"local pot_v={float(pot_v):.12g}; "
-                f"local pot_t={float(pot_t):.9g}; "
-                f"local pot_n={int(pot_pulses)}; "
-                f"local read_v={float(read_v):.12g}; "
-                f"local read_t={float(read_t):.9g}; "
-                f"local settle_t={float(settle_t):.9g}; "
-                f"local dep_v={float(dep_v):.12g}; "
-                f"local dep_t={float(dep_t):.9g}; "
-                f"local dep_n={int(dep_pulses)}; "
-                f"local gap_t={float(gap_delay_s):.9g}; "
-                f"local cycles={int(cycles)}; "
-                f"local elapsed=0; "
-                f"local pulse_no=0; "
-                f"local out=''; "
-                f"{self.channel}.source.output = {self.channel}.OUTPUT_ON; "
-                f"for cyc=1,cycles do "
-                f"for n=1,pot_n do "
-                f"{self.channel}.source.levelv=pot_v; "
-                f"delay(pot_t); "
-                f"elapsed=elapsed+pot_t; "
-                f"if settle_t > 0 then "
-                f"{self.channel}.source.levelv=0; "
-                f"delay(settle_t); "
-                f"elapsed=elapsed+settle_t; "
-                f"end; "
-                f"{self.channel}.source.levelv=read_v; "
-                f"delay(read_t); "
-                f"elapsed=elapsed+read_t; "
-                f"pulse_no=pulse_no+1; "
-                f"local i={self.channel}.measure.i(); "
-                f"out=out..string.format('%d,%.12g,%.12e,%d,%.12g,pot;', pulse_no, read_v, i, cyc, elapsed); "
-                f"if gap_t > 0 then "
-                f"{self.channel}.source.levelv=0; "
-                f"delay(gap_t); "
-                f"elapsed=elapsed+gap_t; "
-                f"end; "
-                f"end; "
-                f"for n=1,dep_n do "
-                f"{self.channel}.source.levelv=dep_v; "
-                f"delay(dep_t); "
-                f"elapsed=elapsed+dep_t; "
-                f"if settle_t > 0 then "
-                f"{self.channel}.source.levelv=0; "
-                f"delay(settle_t); "
-                f"elapsed=elapsed+settle_t; "
-                f"end; "
-                f"{self.channel}.source.levelv=read_v; "
-                f"delay(read_t); "
-                f"elapsed=elapsed+read_t; "
-                f"pulse_no=pulse_no+1; "
-                f"local i={self.channel}.measure.i(); "
-                f"out=out..string.format('%d,%.12g,%.12e,%d,%.12g,dep;', pulse_no, read_v, i, cyc, elapsed); "
-                f"if gap_t > 0 then "
-                f"{self.channel}.source.levelv=0; "
-                f"delay(gap_t); "
-                f"elapsed=elapsed+gap_t; "
-                f"end; "
-                f"end; "
-                f"end; "
-                f"{self.channel}.source.levelv = 0; "
-                f"{self.channel}.source.output = {self.channel}.OUTPUT_OFF; "
-                f"print(out)"
-            )
+            script = [
+                "loadandrunscript",
+                f"local old_nplc = {self.channel}.measure.nplc",
+                f"{self.channel}.measure.nplc = 0.01",
+                f"local pot_v={float(pot_v):.12g}",
+                f"local pot_t={float(pot_t):.9g}",
+                f"local pot_n={int(pot_pulses)}",
+                f"local read_v={float(read_v):.12g}",
+                f"local read_t={float(read_t):.9g}",
+                f"local settle_t={float(settle_t):.9g}",
+                f"local dep_v={float(dep_v):.12g}",
+                f"local dep_t={float(dep_t):.9g}",
+                f"local dep_n={int(dep_pulses)}",
+                f"local gap_t={float(gap_delay_s):.9g}",
+                f"local cycles={int(cycles)}",
+                "local elapsed=0",
+                "local pulse_no=0",
+                "local out=''",
+                f"{self.channel}.source.output = {self.channel}.OUTPUT_ON",
+                "for cyc=1,cycles do",
+                "for n=1,pot_n do",
+                f"{self.channel}.source.levelv=pot_v",
+                "delay(pot_t)",
+                "elapsed=elapsed+pot_t",
+                "if settle_t > 0 then",
+                f"{self.channel}.source.levelv=0",
+                "delay(settle_t)",
+                "elapsed=elapsed+settle_t",
+                "end",
+                f"{self.channel}.source.levelv=read_v",
+                "delay(read_t)",
+                "elapsed=elapsed+read_t",
+                "pulse_no=pulse_no+1",
+                f"local i={self.channel}.measure.i()",
+                "out=out..string.format('%d,%.12g,%.12e,%d,%.12g,pot;', pulse_no, read_v, i, cyc, elapsed)",
+                "if gap_t > 0 then",
+                f"{self.channel}.source.levelv=0",
+                "delay(gap_t)",
+                "elapsed=elapsed+gap_t",
+                "end",
+                "end",
+                "for n=1,dep_n do",
+                f"{self.channel}.source.levelv=dep_v",
+                "delay(dep_t)",
+                "elapsed=elapsed+dep_t",
+                "if settle_t > 0 then",
+                f"{self.channel}.source.levelv=0",
+                "delay(settle_t)",
+                "elapsed=elapsed+settle_t",
+                "end",
+                f"{self.channel}.source.levelv=read_v",
+                "delay(read_t)",
+                "elapsed=elapsed+read_t",
+                "pulse_no=pulse_no+1",
+                f"local i={self.channel}.measure.i()",
+                "out=out..string.format('%d,%.12g,%.12e,%d,%.12g,dep;', pulse_no, read_v, i, cyc, elapsed)",
+                "if gap_t > 0 then",
+                f"{self.channel}.source.levelv=0",
+                "delay(gap_t)",
+                "elapsed=elapsed+gap_t",
+                "end",
+                "end",
+                "end",
+                f"{self.channel}.source.levelv = 0",
+                f"{self.channel}.source.output = {self.channel}.OUTPUT_OFF",
+                f"{self.channel}.measure.nplc = old_nplc",
+                "print(out)",
+                "endscript",
+            ]
+            cmd = "\n".join(script)
             raw = self._query(cmd).strip()
             rows = []
             for item in (part for part in raw.split(";") if part):
