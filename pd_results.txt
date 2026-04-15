@@ -1,0 +1,2 @@
+# PD mode | instrument_timing=tsp2600 | compliance=1 uA | pot_v=1 V | pot_t=0.01 s | pot_pulses=10 | read_v=0.1 V | read_t=0.02 s | stim_to_read_delay_zero_v=0.01 s | dep_v=-1 V | dep_t=0.01 s | dep_pulses=10 | common_delay_after_read=0 s | cycles=1
+No_of_pulse	read_current_A	read_voltage_V
